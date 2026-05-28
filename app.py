@@ -81,3 +81,4 @@ final_price = prod_price_sar + (prod_price_sar * (margin_percent / 100))
 st.info(f"**السعر النهائي للبيع في المتجر:** {final_price:.2f} ر.س")
 
 st.success("💡 هذا الكود للتجربة فقط. زر 'الرفع إلى سلة' مخفي حالياً حتى تتأكد من عمل السحب.")
+                
