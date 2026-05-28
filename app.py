@@ -1,86 +1,70 @@
 import streamlit as st
 import requests
-import re
-import json
 
 # إعدادات واجهة سوق مدار
 st.set_page_config(page_title="سوق مدار", page_icon="🚀", layout="centered")
-st.title("🚀 لوحة تحكم سوق مدار (استخراج المنتجات)")
+st.title("🚀 لوحة تحكم سوق مدار (إضافة المنتجات)")
 
 st.sidebar.title("محلك - سوق مدار")
 option = st.sidebar.radio("القائمة الرئيسية", ["إضافة منتج ترينديول"])
 
-st.info("💡 طريقة العمل: الصق كود الصفحة (HTML) أو نص المنتج بالأسفل، واضغط على جلب لاستخراج البيانات. حقول العمولة والرفع لـ سلة ستظهر لك في الأسفل بعد نجاح الجلب.")
+st.info("💡 أدخل بيانات المنتج الأساسية بالأسفل، وسيظهر لك مربع العمولة وزر الرفع لمتجرك في سلة بأسفل الصفحة تلقائيًا.")
 
-# الخطوة 1: صندوق جلب واستخراج المنتج فقط
-html_input = st.text_area("الصق كود الصفحة (HTML) أو نص المنتج هنا:", height=150, placeholder="افتح المنتج في متصفحك، انسخ كود الصفحة أو تفاصيلها وضعه هنا...")
+# الخطوة 1: إدخال البيانات المباشرة بدون تعقيد الروابط
+prod_name = st.text_input("اسم المنتج (اكتب الاسم أو الصقه من ترينديول):")
+prod_id = st.text_input("رقم المنتج ID (الرقم الموجود بعد p- في الرابط):", placeholder="مثال: 1107430640")
+price_sar = st.number_input("السعر الحالي في ترينديول السعودية (بالريال):", min_value=0.0, value=0.0, step=1.0)
 
-# زر الجلب والاستخراج (لا يرفع شيئاً لـ سلة)
-if st.button("جلب بيانات المنتج واستخراجها 🔍"):
-    if html_input:
-        with st.spinner("جاري قراءة البيانات المستلمة وفحصها..."):
-            # البحث عن الهيكل البرمجي لترينديول
-            match = re.search(r"window\.__INITIAL_STATE__\s*=\s*(\{.*?\});", html_input)
-            
-            if match:
-                try:
-                    data_json = json.loads(match.group(1))
-                    product_info = data_json.get("product", {})
-                    
-                    name = product_info.get("name", "منتج ترينديول")
-                    brand = product_info.get("brand", {}).get("name", "")
-                    sku = str(product_info.get("id", "000000"))
-                    
-                    price_info = product_info.get("price", {})
-                    price_sar = price_info.get("discountedPrice", {}).get("value")
-                    if not price_sar:
-                        price_sar = price_info.get("sellingPrice", {}).get("value", 0)
-                        
-                    images = product_info.get("images", [])
-                    image_url = "https://cdn.dsmcdn.com" + images[0] if images else ""
-                    
-                    st.session_state['product_ready'] = {
-                        "name": f"{brand} {name}".strip(),
-                        "sku": sku,
-                        "price_sar": float(price_sar),
-                        "image": image_url
-                    }
-                    st.success("🎯 تم جلب واستخراج بيانات المنتج بنجاح! انزل لأسفل الصفحة للتحكم بالعمولة والرفع.")
-                except Exception as e:
-                    st.error("فشل قراءة الكود، يرجى التأكد من نسخه بالكامل.")
-            else:
-                # خطة مرنة إذا تم لصق نص عادي يحتوي على اسم وسعر
-                prices = re.findall(r"\d+\.\d+|\d+", html_input)
-                clean_name = re.sub(r"http\S+", "", html_input).strip()
-                clean_name = clean_name.replace("SAR", "").replace("ريال", "").strip()
-                
-                if prices:
-                    extracted_price = float(prices[0])
-                    for p in prices:
-                        clean_name = clean_name.replace(p, "").strip()
-                    
-                    st.session_state['product_ready'] = {
-                        "name": clean_name if clean_name else "منتج ترينديول جديد",
-                        "sku": "TR-" + str(extracted_price).replace('.', ''),
-                        "price_sar": extracted_price,
-                        "image": "https://images.unsplash.com/photo-1523381210434-271e8be1f52b"
-                    }
-                    st.success("🎯 تم استخراج الاسم والسعر بنجاح! الحقول جاهزة بالأسفل.")
-                else:
-                    st.error("لم نجد بيانات واضحة. يرجى لصق كود الصفحة بالكامل أو نص يحتوي على السعر.")
+if st.button("تجهيز بيانات المنتج 🔍"):
+    if prod_name and price_sar > 0:
+        # حفظ البيانات في ذاكرة الصفحة لتظهر بالأسفل
+        st.session_state['manual_product'] = {
+            "name": prod_name,
+            "sku": prod_id if prod_id else "TR-000",
+            "price_sar": float(price_sar)
+        }
+        st.success("🎯 تم تجهيز المنتج بنجاح! انزل للأسفل لتحديد عمولتك ورفعه لـ سلة.")
     else:
-        st.warning("الرجاء لصق الكود أو النص أولاً ليتمكن النظام من الجلب.")
+        st.warning("الرجاء كتابة اسم المنتج والسعر أولاً للتجهيز.")
 
-# --- الخطوة 2: أسفل صفحة استخراج المنتج (تظهر فقط بعد نجاح الجلب) ---
-if 'product_ready' in st.session_state:
-    data = st.session_state['product_ready']
+# --- الخطوة 2: تظهر في الأسفل فقط بعد الضغط على التجهيز (حسب طلبك) ---
+if 'manual_product' in st.session_state:
+    data = st.session_state['manual_product']
     st.write("---")
-    st.subheader("📋 مراجعة المنتج وتحديد العمولة قبل الرفع")
+    st.subheader("📋 مراجعة الأسعار والرفع إلى سلة")
     
-    if data["image"]:
-        st.image(data["image"], width=130, caption="صورة المنتج المستخرجة")
-        
-    # حقول التعديل والمراجعة
-    new_name = st.text_input("اسم المنتج (يمكنك تعريبه وتعديله هنا)", value=data["name"])
-    sku = st.text_input
+    # عرض البيانات الحالية
+    st.write(f"📦 المنتج: **{data['name']}**")
+    st.write(f"🔢 رمز SKU: **{data['sku']}**")
+    st.write(f"💵 السعر الأصلي: **{data['price_sar']:.2f} ريال سعودي**")
     
+    # مربع العموله (تتحكم بالجرام والنسبة)
+    comm = st.number_input("نسبة عمولتك وهامش ربحك (%)", min_value=0.0, value=15.0, step=1.0)
+    
+    # حساب السعر النهائي المباشر
+    final_price = data['price_sar'] * (1 + (comm / 100))
+    st.metric(label="💰 السعر النهائي الذي سيظهر في متجرك (سلة)", value=f"{final_price:.2f} SAR")
+    
+    # مربع الـ Token الخاص بمتجرك
+    salla_token = st.text_input("أدخل رمز وصول سلة (Salla Access Token)", type="password", placeholder="ضع الـ Token الخاص بمتجرك للرفع...")
+    
+    # زر رفع المنتج في أسفل الصفحة تماماً كما طلبت
+    if st.button("➕ ارفع المنتج الآن إلى متجري في سلة"):
+        if salla_token:
+            with st.spinner("جاري إرسال المنتج إلى سلة..."):
+                headers = {"Authorization": f"Bearer {salla_token}", "Content-Type": "application/json"}
+                payload = {
+                    "name": data['name'], 
+                    "price": round(final_price, 2), 
+                    "quantity": 10, 
+                    "sku": data['sku'],
+                    "images": [{"url": "https://images.unsplash.com/photo-1523381210434-271e8be1f52b"}] # صورة مؤقتة حتى نربط الصور لاحقاً
+                }
+                res = requests.post("https://api.salla.dev/admin/v2/products", headers=headers, json=payload)
+                if res.status_code in [200, 201]: 
+                    st.success("✅ مبروك! المنتج نزل رسميًا في متجرك على سلة بالربح الجديد!")
+                else: 
+                    st.error(f"❌ فشل الرفع لـ سلة. تفاصيل الخطأ: {res.text}")
+        else:
+            st.error("الرجاء وضع الـ Salla Token أولاً لتتمكن من رفع المنتج.")
+            
