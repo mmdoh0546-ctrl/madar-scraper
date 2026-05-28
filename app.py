@@ -59,25 +59,5 @@ if st.button("جلب البيانات", type="primary"):
 st.divider()
 
 # --- قسم عرض البيانات وتعديلها ---
-st.header("📦 البيانات المستخرجة (يمكنك تعديلها)")
-
-col1, col2 = st.columns(2)
-with col1:
-    prod_name = st.text_input("اسم المنتج", value=st.session_state.scraped_data['name'])
-    prod_sku = st.text_input("رمز SKU", value=st.session_state.scraped_data['sku'])
-with col2:
-    prod_price_sar = st.number_input("السعر الأصلي (ر.س)", min_value=0.0, value=float(st.session_state.scraped_data['price']), step=1.0)
-    prod_image = st.text_input("رابط صورة المنتج", value=st.session_state.scraped_data['image'])
-
-prod_desc = st.text_area("وصف المنتج", value=st.session_state.scraped_data['description'], height=150)
-
-st.divider()
-
-# --- قسم التسعير النهائي ---
-st.header("💰 تسعير المنتج")
-margin_percent = st.number_input("نسبة العمولة وهامش الربح (%)", min_value=0.0, value=20.0, step=1.0)
-
-final_price = prod_price_sar + (prod_price_sar * (margin_percent / 100))
-st.info(f"**السعر النهائي للبيع في المتجر:** {final_price:.2f} ر.س")
-
-st.success("💡 هذا الكود للتجربة فقط. زر 'الرفع إلى سلة' مخفي حالياً حتى تتأكد من عمل السحب.")
+st.header("📦 البيانات
+          
