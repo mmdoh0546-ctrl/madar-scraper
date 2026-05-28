@@ -1,6 +1,7 @@
 import streamlit as st
 import requests
 import re
+import json
 
 st.set_page_config(page_title="سوق مدار", page_icon="🚀", layout="centered")
 st.title("🚀 لوحة تحكم سوق مدار (الجلب الأوتوماتيكي)")
@@ -27,7 +28,6 @@ def fetch_trendyol_perfect(url):
         
         if response.status_code == 200:
             wrapper_data = response.json()
-            # قراءة البيانات النصية وتحويلها لـ JSON
             content_json = wrapper_data.get("contents", "{}")
             data = json.loads(content_json)
             
@@ -60,7 +60,7 @@ def fetch_trendyol_perfect(url):
             return {"error": "الوسيط البرمجي مشغول حالياً، أعد المحاولة بعد ثوانٍ."}
             
     except Exception as e:
-        # خطة بديلة ذكية جداً: إذا تعطل الاتصال بالكامل، يفعل الوضع المرن التلقائي للتجربة والرفع فوراً
+        # خطة بديلة ذكية جداً: إذا تعطل الاتصال بالكامل، يظهر منتج افتراضي سعودي للتجربة والرفع فوراً دون تعطيل الواجهة
         return {
             "name": "تيشيرت أساسي راوند أصفر رجالي - Redtag",
             "sku": "1107430640",
@@ -104,7 +104,6 @@ if 'trendyol_auto_data' in st.session_state:
     if st.button("ارفع المنتج فوراً إلى متجري في سلة ➕"):
         if salla_token:
             with st.spinner("جاري الرفع التلقائي إلى سلة..."):
-                import json
                 headers = {"Authorization": f"Bearer {salla_token}", "Content-Type": "application/json"}
                 payload = {"name": new_name, "price": round(final_price, 2), "quantity": 10, "sku": sku, "images": [{"url": data["image"]}]}
                 res = requests.post("https://api.salla.dev/admin/v2/products", headers=headers, json=payload)
@@ -112,3 +111,4 @@ if 'trendyol_auto_data' in st.session_state:
                 else: st.error(f"فشل الرفع لـ سلة: {res.text}")
         else:
             st.error("أدخل الـ Salla Token أولاً لإتمام عملية الرفع المباشر.")
+            
