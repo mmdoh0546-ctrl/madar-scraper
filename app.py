@@ -3,7 +3,6 @@ import requests
 import re
 import json
 
-# إعدادات الصفحة البرمجية لواجهة سوق مدار
 st.set_page_config(page_title="سوق مدار", page_icon="🚀", layout="centered")
 st.title("🚀 لوحة تحكم سوق مدار (الجلب الأوتوماتيكي المباشر)")
 
@@ -12,17 +11,16 @@ option = st.sidebar.radio("القائمة الرئيسية", ["إضافة منت
 
 def fetch_trendyol_direct(url):
     try:
-        # 1. استخراج رقم المنتج الذكي من الرابط المباشر
+        # 1. استخراج رقم المنتج من الرابط المباشر
         match = re.search(r"-p-(\d+)", url)
         if not match:
             return {"error": "تأكد من أن الرابط يحتوي على رقم المنتج المسبوق بـ -p-"}
         
         product_id = match.group(1)
         
-        # 2. رابط الـ API المباشر لبيانات منتجات ترينديول
+        # 2. رابط الـ API المباشر لبيانات منتجات ترينديول السعودية
         target_api = f"https://public-mdc.trendyol.com/discovery-web-product-service/api/productDetail/{product_id}"
         
-        # 3. ترويسات متطورة تحاكي متصفحاً حقيقياً وتحدد عملة الريال السعودي والمنطقة
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             "Accept": "application/json, text/plain, */*",
@@ -40,7 +38,7 @@ def fetch_trendyol_direct(url):
             data = response.json()
             result = data.get("result", {})
             if not result:
-                return {"error": "لم نتمكن من العثور على تفاصيل المنتج داخل السيرفر."}
+                return {"error": "لم نتمكن من العثور على تفاصيل هذا المنتج داخل السيرفر حالياً."}
                 
             name = result.get("name", "منتج ترينديول")
             brand = result.get("brand", {}).get("name", "")
@@ -52,9 +50,13 @@ def fetch_trendyol_direct(url):
             if not price_sar:
                 price_sar = price_info.get("sellingPrice", {}).get("value", 0)
                 
-            # جلب رابط الصورة الأساسية
+            # جلب رابط الصورة الأساسية بدقة واحترافية
             images = result.get("images", [])
-            image_url = "https://cdn.dsmcdn.com" + images[0] if images else "https://images.unsplash.com/photo-1523381210434-271e8be1f52b"
+            image_url = ""
+            if images:
+                image_url = images[0] if images[0].startswith("http") else "https://cdn.dsmcdn.com" + images[0]
+            else:
+                image_url = "https://images.unsplash.com/photo-1523381210434-271e8be1f52b"
             
             return {
                 "name": f"{brand} {name}".strip(),
@@ -64,27 +66,23 @@ def fetch_trendyol_direct(url):
                 "error": None
             }
         else:
-            return {"error": f"ترينديول لم يستجب للطلب المباشر (كود الخطأ: {response.status_code})."}
+            return {"error": f"ترينديول لم يستجب للطلب المباشر تلقائياً. كود الخطأ: {response.status_code}"}
             
     except Exception as e:
-        # خطة بديلة تلقائية: تضمن استمرار عمل الموقع وعرض بيانات افتراضية إذا حدث أي انقطاع مؤقت في الشبكة
-        return {
-            "name": "تيشيرت أساسي راوند أصفر رجالي - Redtag",
-            "sku": "1107430640",
-            "price_sar": 34.00,
-            "image": "https://cdn.dsmcdn.com/ty1113/product/media/images/prod/SPG/20240103/17/be27ee37-77cf-34ef-9b37-2ba077d8a689/1_org_zoom.jpg",
-            "error": None
-        }
+        return {"error": f"مشكلة مؤقتة في الاتصال بالشبكة: {str(e)}"}
 
 # صندوق إدخال الرابط للمستخدم
 input_url = st.text_input("ضع رابط منتج ترينديول السعودية هنا:", placeholder="https://www.trendyol.com/ar/...")
 
 if st.button("جلب البيانات تلقائياً 🔍"):
     if input_url:
-        with st.spinner("جاري الاتصال المباشر وقراءة السعر بالريال..."):
+        with st.spinner("جاري قراءة الرابط وسحب السعر بالريال..."):
             res = fetch_trendyol_direct(input_url)
-            st.session_state['trendyol_auto_data'] = res
-            st.success("🎯 تم معالجة الرابط وجلب البيانات بنجاح!")
+            if res.get("error"):
+                st.error(res["error"])
+            else:
+                st.session_state['trendyol_auto_data'] = res
+                st.success("🎯 تم معالجة الرابط وجلب البيانات بنجاح!")
     else:
         st.warning("الرجاء وضع الرابط أولاً.")
 
@@ -93,7 +91,9 @@ if 'trendyol_auto_data' in st.session_state:
     data = st.session_state['trendyol_auto_data']
     st.write("---")
     
-    st.image(data["image"], width=130)
+    # عرض الصورة فقط إذا كانت متوفرة وبشكل صحيح لتجنب الرموز المكسورة
+    if data.get("image"):
+        st.image(data["image"], width=150, caption="صورة المنتج المجلوبة")
         
     new_name = st.text_input("اسم المنتج للمتجر", value=data["name"])
     sku = st.text_input("رمز SKU", value=data["sku"])
@@ -119,5 +119,5 @@ if 'trendyol_auto_data' in st.session_state:
                 else: 
                     st.error(f"فشل الرفع لـ سلة: {res.text}")
         else:
-            st.error("أدخل الـ Salla Token أولاً لإتمام عملية الرفع.")
-        
+            st.error("أدخل الـ Salla Token أولاً لإتمام عملية الرفع المباشر.")
+            
