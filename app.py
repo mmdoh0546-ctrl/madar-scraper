@@ -81,7 +81,6 @@ def fetch_trendyol_product(url):
     clean_url = url.split('?')[0]
     html = ""
     
-    # 1. الاتصال المباشر الصافي (الطريقة التي نجحت سابقاً)
     headers = {
         'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
         'Accept-Language': 'ar,en-US;q=0.9'
@@ -111,7 +110,6 @@ def fetch_trendyol_product(url):
     available_sizes = []
     out_of_stock_sizes = []
     
-    # 2. استخراج العنوان والسعر من (الأساسيات الثابتة للموقع)
     meta_title = soup.find('meta', property='og:title')
     if meta_title: 
         title = meta_title.get('content', '').replace(" - Trendyol", "").strip()
@@ -121,7 +119,6 @@ def fetch_trendyol_product(url):
         try: price = float(meta_price.get('content', '0').replace(',', '.'))
         except: pass
 
-    # إذا فشل الميتا تاج، نستخدم JSON-LD كخطة بديلة
     if not title or price == 0.0:
         for script in soup.find_all('script', type='application/ld+json'):
             if script.string and 'Product' in script.string:
@@ -135,11 +132,9 @@ def fetch_trendyol_product(url):
                         price = float(offers.get('price', 0.0))
                 except: pass
 
-    # 3. استخراج SKU
     sku_match = re.search(r'-p-(\d+)', clean_url)
     if sku_match: sku = sku_match.group(1)
 
-    # 4. استخراج الألوان والمقاسات باستخدام Regex مباشر (بدون تدمير الكود)
     color_match = re.search(r'"color":\s*"([^"]+)"', html)
     if color_match: color_val = color_match.group(1)
 
@@ -154,26 +149,22 @@ def fetch_trendyol_product(url):
                     else: out_of_stock_sizes.append(val)
         except: pass
 
-    # 5. استخراج الصور وتنقيتها بالفلتر الفولاذي
     raw_images = re.findall(r'(https://cdn\.dsmcdn\.com/[^"\'\s<>]+?\.(?:jpg|jpeg|webp|png))', html, re.IGNORECASE)
     blacklist = ['logo', 'icon', 'flag', 'pci', 'iso', 'trust', 'badge', 'payment', 'footer', 'asset', 'saudibusiness', 'sbc', 'stamp', 'rating', 'maroof', 'mada', 'visa', 'mastercard', 'applepay', 'stcpay', 'vat', 'tax', 'norton', 'size-chart', 'delivery', 'campaign', 'brand']
     
     final_images = []
-    # الأولوية لصور المنتج الحقيقية (تحتوي على productmedia أو ty)
     for img in raw_images:
         clean_img = re.sub(r'/mnresize/\d+/\d+/', '/', img) 
         if not any(bad_word in clean_img.lower() for bad_word in blacklist):
             if ('productmedia' in clean_img or '/ty/' in clean_img) and clean_img not in final_images:
                 final_images.append(clean_img)
                 
-    # إذا لم يجد شيئاً، يخفف الفلتر قليلاً
     if not final_images:
         for img in raw_images:
             clean_img = re.sub(r'/mnresize/\d+/\d+/', '/', img) 
             if not any(bad_word in clean_img.lower() for bad_word in blacklist) and clean_img not in final_images:
                 final_images.append(clean_img)
 
-    # 6. تجميع الوصف
     final_desc_parts = []
     if color_val: final_desc_parts.append(f"🎨 **اللون:** {color_val}")
     if available_sizes: final_desc_parts.append(f"✅ **مقاسات متوفرة للبيع:** {', '.join(available_sizes)}")
@@ -340,4 +331,15 @@ elif menu == "🗄️ مستودع المنتجات":
                         st.markdown(f"**{title}**")
                         st.caption(f"رمز التخزين: {sku}")
                         st.write(f"السعر: **{f_price:.2f} SAR**")
-                        st.markdown(f"[رابط المورد الأصلي]({
+                        st.markdown(f"[رابط المورد الأصلي]({url})")
+                        
+                    with col_actions:
+                        if st.button("✏️ تعديل", key=f"edit_{prod_id}", use_container_width=True):
+                            st.session_state['editing_id'] = prod_id
+                            st.rerun()
+                            
+                        if st.button("🗑️ حذف", key=f"del_{prod_id}", use_container_width=True):
+                            delete_product(prod_id)
+                            st.rerun()
+                    
+                    st.write("---") 
