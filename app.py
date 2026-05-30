@@ -74,7 +74,7 @@ if 'editing_id' not in st.session_state:
     st.session_state['editing_id'] = None
 
 # ==========================================
-# 3. محرك السحب الجبار (يسحب الألوان، المقاسات، الوصف، ورمز التخزين)
+# 3. محرك السحب (المحصن ضد تعطل الروابط العربية)
 # ==========================================
 def fetch_trendyol_product(url):
     scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
@@ -91,79 +91,99 @@ def fetch_trendyol_product(url):
         sku = ""
         raw_images = []
         
-        # متغيرات الوصف التفصيلي
         color_val = ""
         sizes_list = []
         desc_text = ""
         attr_lines = []
         
+        # 1. استخراج SKU من الرابط (أسرع طريقة)
         sku_match = re.search(r'-p-(\d+)', url)
         if sku_match:
             sku = sku_match.group(1)
             
+        # 2. الغوص في البيانات العميقة (INITIAL_STATE)
         state_match = re.search(r'window\.__INITIAL_STATE__\s*=\s*(\{.*?\});', html, re.DOTALL)
         if state_match:
             try:
                 state_data = json.loads(state_match.group(1))
                 product = state_data.get('product', {}).get('productDetail', {})
                 
-                # العنوان والماركة
                 title = product.get('name', '')
                 brand = product.get('brand', {}).get('name', '')
-                if brand and brand not in title: 
-                    title = f"{brand} - {title}"
+                if brand and brand not in title: title = f"{brand} - {title}"
                     
-                # السعر
                 price_data = product.get('price', {})
                 price_val = price_data.get('sellingPrice', {}).get('value') or price_data.get('originalPrice', {}).get('value')
                 if price_val: price = float(price_val)
                 
-                # رمز التخزين
-                if not sku:
-                    sku = str(product.get('productCode', ''))
+                if not sku: sku = str(product.get('productCode', ''))
                 
-                # الصور
                 for img in product.get('images', []):
                     img_str = str(img)
                     if img_str.startswith('http'): raw_images.append(img_str)
                     else: raw_images.append(f"https://cdn.dsmcdn.com{img_str}")
 
-                # ---------------------------------
-                # صيد الألوان والمقاسات والمواصفات
-                # ---------------------------------
-                
-                # 1. اللون (Color)
                 color_val = product.get('color', '')
-                
-                # 2. المقاسات والخيارات (Variants)
                 variants = product.get('allVariants', product.get('variants', []))
                 for v in variants:
                     val = v.get('value', '')
-                    if val and val not in sizes_list:
-                        sizes_list.append(val)
+                    if val and val not in sizes_list: sizes_list.append(val)
                 
-                # 3. الوصف النصي للمنتج (Content Descriptions)
                 content_desc = product.get('contentDescriptions', [])
                 if content_desc:
                     html_desc = content_desc[0].get('description', '')
                     clean_text = BeautifulSoup(html_desc, 'html.parser').get_text(separator='\n').strip()
-                    if clean_text and "اكتشف العروض" not in clean_text:
-                        desc_text = clean_text
+                    if clean_text and "اكتشف العروض" not in clean_text: desc_text = clean_text
                 
-                # 4. جدول المواصفات (Attributes)
                 attrs = product.get('attributes', [])
                 for attr in attrs:
                     k = attr.get('key', {}).get('name', '')
                     v = attr.get('value', {}).get('name', '')
                     if k and v:
                         attr_lines.append(f"• {k}: {v}")
-                        # محاولة ثانية لاصطياد اللون إذا كان داخل المواصفات
-                        if k.lower() in ['renk', 'color', 'لون'] and not color_val:
-                            color_val = v
+                        if k.lower() in ['renk', 'color', 'لون'] and not color_val: color_val = v
             except:
                 pass
 
-        # فلتر الصور (إزالة أي شعارات)
+        # 3. شبكة الأمان (HTML Fallback) - هذه الخطوة هي التي أصلحت العطل!
+        if not title:
+            meta_title = soup.find('meta', property='og:title')
+            if meta_title: 
+                title = meta_title.get('content', '')
+            else:
+                h1_tag = soup.find('h1')
+                if h1_tag: title = h1_tag.get_text(strip=True)
+                
+        if price == 0.0:
+            meta_price = soup.find('meta', property='product:price:amount')
+            if meta_price:
+                try: price = float(meta_price.get('content', 0.0))
+                except: pass
+                
+            if price == 0.0:
+                price_tag = soup.find(class_=re.compile(r'prc-dsc|product-price'))
+                if price_tag:
+                    price_str = re.sub(r'[^\d.]', '', price_tag.text.replace(',', '.'))
+                    if price_str: price = float(price_str)
+
+        # 4. جلب الصور المتبقية إذا فشلت الخطوة 2
+        if not raw_images:
+            scripts = soup.find_all('script', type='application/ld+json')
+            for script in scripts:
+                if script.string and 'Product' in script.string:
+                    try:
+                        data = json.loads(script.string)
+                        p_data = data[0] if isinstance(data, list) else data
+                        img_data = p_data.get('image', [])
+                        if isinstance(img_data, str): raw_images.append(img_data)
+                        elif isinstance(img_data, list): raw_images.extend(img_data)
+                    except: pass
+
+        if not raw_images:
+            regex_imgs_full = re.findall(r'(https://cdn\.dsmcdn\.com/[^"\'\s<>]+?\.(?:jpg|jpeg|webp|png))', html, re.IGNORECASE)
+            raw_images.extend(regex_imgs_full)
+
+        # فلترة الصور من الشعارات والأيقونات
         blacklist = ['logo', 'icon', 'flag', 'pci', 'iso', 'trust', 'badge', 'payment', 'footer', 'asset', 'saudibusiness', 'sbc', 'stamp', 'rating']
         final_images = []
         for img in raw_images:
@@ -173,24 +193,21 @@ def fetch_trendyol_product(url):
                 if clean_img not in final_images:
                     final_images.append(clean_img)
 
-        # ترتيب وبناء الوصف النهائي الشامل
+        # ترتيب الوصف النهائي
         final_desc_parts = []
-        if color_val:
-            final_desc_parts.append(f"🎨 **اللون:** {color_val}")
-        if sizes_list:
-            final_desc_parts.append(f"📏 **المقاسات/الخيارات المتاحة:** {', '.join(sizes_list)}")
-        if desc_text:
-            final_desc_parts.append(f"\n📝 **وصف المنتج:**\n{desc_text}")
-        if attr_lines:
-            final_desc_parts.append(f"\n📌 **المواصفات الفنية:**\n" + "\n".join(attr_lines))
+        if color_val: final_desc_parts.append(f"🎨 **اللون:** {color_val}")
+        if sizes_list: final_desc_parts.append(f"📏 **المقاسات/الخيارات المتاحة:** {', '.join(sizes_list)}")
+        if desc_text: final_desc_parts.append(f"\n📝 **وصف المنتج:**\n{desc_text}")
+        if attr_lines: final_desc_parts.append(f"\n📌 **المواصفات الفنية:**\n" + "\n".join(attr_lines))
 
         if final_desc_parts:
             final_description = "\n".join(final_desc_parts)
         else:
             final_description = "لم يقم المورد بإدراج مواصفات دقيقة لهذا المنتج."
 
+        # التأكد النهائي لمنع توقف التطبيق
         if not title or price == 0.0:
-            return {"error": "لم نتمكن من استخراج السعر أو العنوان. يرجى التأكد من الرابط."}
+            return {"error": "لم نتمكن من استخراج السعر أو العنوان. المورد يستخدم حماية قوية جداً على هذا الرابط حالياً."}
             
         return {
             "title": title, 
