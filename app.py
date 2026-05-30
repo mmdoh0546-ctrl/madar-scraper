@@ -54,7 +54,7 @@ st.sidebar.title("📦 لوحة تحكم سوق مدار")
 st.sidebar.write("---")
 menu = st.sidebar.radio("اختر قسم:", ["🚀 سحب منتج جديد", "🗄️ مستودع المنتجات (المنتجات المحفوظة)"])
 
-# --- دالة الجلب المدمجة (تجمع بين استقرار الكود السابق والميزات الجديدة) ---
+# --- دالة الجلب فائقة الذكاء (محدثة لاصطياد الصور والمواصفات الدقيقة) ---
 def fetch_trendyol_product(url):
     scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
     try:
@@ -63,69 +63,30 @@ def fetch_trendyol_product(url):
             return {"error": f"الموقع يرفض الاتصال. كود: {response.status_code}"}
             
         soup = BeautifulSoup(response.text, 'html.parser')
+        html_content = response.text
         
         title = ""
         price = 0.0
         description = ""
         images = []
         
-        # الطريقة الأولى والأكثر استقراراً (التي نجحت في الكود القديم)
-        scripts = soup.find_all('script', type='application/ld+json')
-        for script in scripts:
-            if script.string and 'Product' in script.string:
-                try:
-                    data = json.loads(script.string)
-                    product_data = data[0] if isinstance(data, list) else data
-                    
-                    title = product_data.get('name', '')
-                    description = product_data.get('description', '')
-                    
-                    offers = product_data.get('offers', {})
-                    if isinstance(offers, list) and len(offers) > 0:
-                        offers = offers[0]
-                    price = float(offers.get('price', 0.0))
-                    
-                    img_data = product_data.get('image', [])
-                    if isinstance(img_data, str):
-                        images.append(img_data)
-                    elif isinstance(img_data, list):
-                        images.extend(img_data)
-                    break
-                except:
-                    continue
+        # 1. استخراج السعر والعنوان (الطريقة الأكثر استقراراً)
+        match = re.search(r'window\.__INITIAL_STATE__\s*=\s*(\{.*?\});', html_content)
+        if match:
+            try:
+                state_data = json.loads(match.group(1))
+                product = state_data.get('product', {}).get('productDetail', {})
+                
+                title = product.get('name', '')
+                brand = product.get('brand', {}).get('name', '')
+                if brand: title = f"{brand} - {title}"
+                
+                price_data = product.get('price', {})
+                price_val = price_data.get('sellingPrice', {}).get('value') or price_data.get('originalPrice', {}).get('value')
+                if price_val: price = float(price_val)
+            except:
+                pass
 
-        # الطريقة الثانية: الغوص في أعماق الجافا سكريبت (لجلب بيانات إضافية إن نقصت)
-        if not title or not description or price == 0.0 or len(images) <= 1:
-            match = re.search(r'window\.__INITIAL_STATE__\s*=\s*(\{.*?\});', response.text)
-            if match:
-                try:
-                    state_data = json.loads(match.group(1))
-                    product = state_data.get('product', {}).get('productDetail', {})
-                    
-                    if not title:
-                        title = product.get('name', '')
-                        brand = product.get('brand', {}).get('name', '')
-                        if brand: title = f"{brand} - {title}"
-                        
-                    if price == 0.0:
-                        price_data = product.get('price', {})
-                        price_val = price_data.get('sellingPrice', {}).get('value') or price_data.get('originalPrice', {}).get('value')
-                        if price_val: price = float(price_val)
-                        
-                    if len(images) <= 1:
-                        for img in product.get('images', []):
-                            img_url = img if str(img).startswith('http') else f"https://cdn.dsmcdn.com{img}"
-                            if img_url not in images:
-                                images.append(img_url)
-                                
-                    if not description:
-                        attrs = product.get('attributes', [])
-                        desc_lines = [f"• {attr.get('key', {}).get('name')}: {attr.get('value', {}).get('name')}" for attr in attrs]
-                        description = "\n".join(desc_lines)
-                except:
-                    pass
-
-        # الطريقة الثالثة: عناصر HTML المباشرة (كخطة إنقاذ أخيرة)
         if not title:
             meta_title = soup.find('meta', property='og:title')
             if meta_title: title = meta_title.get('content', '')
@@ -136,19 +97,51 @@ def fetch_trendyol_product(url):
                 price_str = re.sub(r'[^\d.]', '', price_tag.text.replace(',', '.'))
                 if price_str: price = float(price_str)
 
-        # فلترة الصور للحصول على أعلى جودة وحذف المكرر
+        # 2. صائد المواصفات التفصيلية (يتجاهل الوصف التسويقي)
+        attr_lists = soup.find_all('ul', class_=re.compile(r'detail-attr|detail-desc|product-detail'))
+        if attr_lists:
+            desc_lines = []
+            for ul in attr_lists:
+                for li in ul.find_all('li'):
+                    desc_lines.append(f"• {li.get_text(strip=True)}")
+            if desc_lines:
+                description = "\n".join(desc_lines)
+                
+        # إذا لم يجد الجدول، يحاول استخراجه من الجافا سكريبت
+        if not description:
+            if match:
+                try:
+                    attrs = product.get('attributes', [])
+                    if attrs:
+                        desc_lines = [f"• {attr.get('key', {}).get('name')}: {attr.get('value', {}).get('name')}" for attr in attrs]
+                        description = "\n".join(desc_lines)
+                except:
+                    pass
+
+        # 3. صائد الصور الشامل (يدعم WEBP و JPG و PNG)
+        # البحث المباشر في كود الصفحة بالكامل عن أي روابط صور للمنتج
+        img_urls = re.findall(r'https://cdn\.dsmcdn\.com/[^"\'\s<>]+?\.(?:jpg|jpeg|webp|png|JPG|JPEG|WEBP|PNG)', html_content)
+        for img in img_urls:
+            # فلترة الصور لأخذ صور المنتج فقط
+            if '/ty' in img or 'productmedia' in img:
+                images.append(img)
+                
+        # تنظيف الصور واستخراج الدقة العالية جداً
         high_res_images = []
         for img in images:
-            if 'mnresize' in img or 'productmedia' in img:
-                high_res = re.sub(r'/mnresize/\d+/\d+/', '/', img)
-                high_res_images.append(high_res)
-            else:
-                high_res_images.append(img)
+            # حذف تصغير الحجم للحصول على الصورة الأصلية
+            clean_img = re.sub(r'/mnresize/\d+/\d+/', '/', img)
+            if clean_img not in high_res_images and 'rating' not in clean_img:
+                high_res_images.append(clean_img)
+                
         images = list(dict.fromkeys(high_res_images))
 
         # التحقق النهائي
         if not title or price == 0.0:
             return {"error": "لم نتمكن من العثور على البيانات بدقة. يرجى التأكد من الرابط."}
+            
+        if not description or "اكتشف العروض" in description:
+            description = "مواصفات المنتج غير متوفرة في جداول المورد، يرجى مراجعة الرابط."
             
         return {"title": title, "price": price, "description": description, "images": images}
         
@@ -158,7 +151,7 @@ def fetch_trendyol_product(url):
 # --- قسم: سحب منتج جديد ---
 if menu == "🚀 سحب منتج جديد":
     st.title("🛍️ سحب المنتجات لمتجر سوق مدار")
-    st.write("أدخل رابط المنتج لجلب الوصف، جميع الصور، والسعر.")
+    st.write("أدخل رابط المنتج لجلب (المواصفات الحقيقية، جميع صيغ الصور، والسعر).")
     
     product_url = st.text_input("🔗 ألصق رابط المنتج هنا:")
     
@@ -176,13 +169,13 @@ if menu == "🚀 سحب منتج جديد":
         if not product_url:
             st.warning("الرجاء وضع الرابط أولاً.")
         else:
-            with st.spinner("جاري تحليل الرابط وسحب البيانات..."):
+            with st.spinner("جاري صيد الصور والمواصفات التفصيلية..."):
                 result = fetch_trendyol_product(product_url)
                 
                 if "error" in result:
                     st.error(result["error"])
                 else:
-                    st.success("تم سحب بيانات المنتج بنجاح!")
+                    st.success("تم سحب بيانات المنتج بنجاح فائق!")
                     
                     original_price = result['price']
                     if commission_type == "مبلغ ثابت":
@@ -209,7 +202,7 @@ if menu == "🚀 سحب منتج جديد":
         price_col2.metric("السعر النهائي للعميل", f"{p['final_price']:.2f}", delta=f"ربحك: {(p['final_price'] - p['supplier_price']):.2f}")
         
         with st.expander("📝 عرض المواصفات والوصف", expanded=True):
-            st.text(p['description'] if p['description'] else "لا توجد مواصفات مفصلة.")
+            st.text(p['description'])
         
         st.subheader(f"📸 صور المنتج ({len(p['images'])} صور)")
         if p['images']:
@@ -258,3 +251,4 @@ elif menu == "🗄️ مستودع المنتجات (المنتجات المحف
                             st.rerun() 
                     with btn_col2:
                         st.link_button("🔗 فتح رابط المورد", url)
+        
