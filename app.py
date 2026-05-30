@@ -75,7 +75,7 @@ if 'editing_id' not in st.session_state:
     st.session_state['editing_id'] = None
 
 # ==========================================
-# 3. محرك السحب الأصلي (مستقر، مباشر، ودقيق)
+# 3. محرك السحب الأصلي (تمت إضافة جلب المقاسات وحظر الشعارات)
 # ==========================================
 def fetch_trendyol_product(url):
     clean_url = url.split('?')[0]
@@ -138,27 +138,49 @@ def fetch_trendyol_product(url):
     color_match = re.search(r'"color":\s*"([^"]+)"', html)
     if color_match: color_val = color_match.group(1)
 
-    variants_match = re.search(r'"allVariants":\s*(\[.*?\])', html) or re.search(r'"variants":\s*(\[.*?\])', html)
-    if variants_match:
+    # --- التعديل الأول: سحب المقاسات بأمان 100% ---
+    next_data = soup.find('script', id='__NEXT_DATA__')
+    if next_data:
         try:
-            variants_data = json.loads(variants_match.group(1))
-            for v in variants_data:
+            data = json.loads(next_data.string)
+            product = data.get('props', {}).get('pageProps', {}).get('product', {})
+            if not color_val: color_val = product.get('color', '')
+            variants = product.get('allVariants', product.get('variants', []))
+            for v in variants:
                 val = v.get('value', '')
                 if val:
                     if v.get('inStock', False): available_sizes.append(val)
                     else: out_of_stock_sizes.append(val)
         except: pass
 
+    if not available_sizes:
+        state_match = re.search(r'window\.__INITIAL_STATE__\s*=\s*(\{.*?\});', html, re.DOTALL)
+        if state_match:
+            try:
+                data = json.loads(state_match.group(1))
+                product = data.get('product', {}).get('productDetail', {})
+                if not color_val: color_val = product.get('color', '')
+                variants = product.get('allVariants', product.get('variants', []))
+                for v in variants:
+                    val = v.get('value', '')
+                    if val:
+                        if v.get('inStock', False): available_sizes.append(val)
+                        else: out_of_stock_sizes.append(val)
+            except: pass
+
+    # --- التعديل الثاني: الفلتر الفولاذي مدعوم بكلمة (frontend) لمنع الشعارات نهائياً ---
     raw_images = re.findall(r'(https://cdn\.dsmcdn\.com/[^"\'\s<>]+?\.(?:jpg|jpeg|webp|png))', html, re.IGNORECASE)
-    blacklist = ['logo', 'icon', 'flag', 'pci', 'iso', 'trust', 'badge', 'payment', 'footer', 'asset', 'saudibusiness', 'sbc', 'stamp', 'rating', 'maroof', 'mada', 'visa', 'mastercard', 'applepay', 'stcpay', 'vat', 'tax', 'norton', 'size-chart', 'delivery', 'campaign', 'brand']
+    blacklist = ['logo', 'icon', 'flag', 'pci', 'iso', 'trust', 'badge', 'payment', 'footer', 'frontend', 'saudibusiness', 'sbc', 'stamp', 'rating', 'maroof', 'mada', 'visa', 'mastercard', 'applepay', 'stcpay', 'vat', 'tax', 'norton', 'size-chart', 'delivery', 'campaign', 'brand']
     
     final_images = []
+    # الأولوية لصور المنتج الحقيقية
     for img in raw_images:
         clean_img = re.sub(r'/mnresize/\d+/\d+/', '/', img) 
         if not any(bad_word in clean_img.lower() for bad_word in blacklist):
-            if ('productmedia' in clean_img or '/ty/' in clean_img) and clean_img not in final_images:
+            if any(key in clean_img.lower() for key in ['productmedia', 'product/media', '/ty/', '/prm/']) and clean_img not in final_images:
                 final_images.append(clean_img)
                 
+    # إذا لم يجد شيئاً، يخفف الفلتر قليلاً مع بقاء الحماية
     if not final_images:
         for img in raw_images:
             clean_img = re.sub(r'/mnresize/\d+/\d+/', '/', img) 
@@ -170,7 +192,7 @@ def fetch_trendyol_product(url):
     if available_sizes: final_desc_parts.append(f"✅ **مقاسات متوفرة للبيع:** {', '.join(available_sizes)}")
     if out_of_stock_sizes: final_desc_parts.append(f"❌ **مقاسات نفدت:** {', '.join(out_of_stock_sizes)}")
 
-    final_description = "\n".join(final_desc_parts) if final_desc_parts else "لم يدرج المورد مواصفات إضافية."
+    final_description = "\n".join(final_desc_parts) if final_desc_parts else "لم يدرج المورد مواصفات أو مقاسات إضافية."
 
     if not title or price == 0.0:
         return {"error": "فشلنا في العثور على السعر أو العنوان. المورد حظر الرابط حالياً."}
@@ -205,7 +227,7 @@ if menu == "🚀 سحب منتج جديد":
         if not product_url:
             st.warning("الرجاء وضع الرابط أولاً.")
         else:
-            with st.spinner("جاري استخراج البيانات بالأساس القوي..."):
+            with st.spinner("جاري استخراج البيانات والمقاسات بالأساس الناجح..."):
                 result = fetch_trendyol_product(product_url)
                 
                 if "error" in result:
