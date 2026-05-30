@@ -2,7 +2,6 @@ import streamlit as st
 import requests
 import json
 import sqlite3
-import re
 from bs4 import BeautifulSoup
 
 # ==========================================
@@ -12,96 +11,82 @@ def init_db():
     conn = sqlite3.connect('madar_products.db')
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS products
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, price REAL, desc TEXT, images TEXT, url TEXT, sku TEXT)''')
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, price REAL, desc TEXT, images TEXT, url TEXT)''')
     conn.commit()
     conn.close()
 
 init_db()
 
 # ==========================================
-# 2. محرك السحب (باستخدام قوتك الجديدة ScraperAPI)
+# 2. محرك السحب (باستخدام مفتاحك الخاص)
 # ==========================================
 def fetch_product(url):
-    # نستخدم مفتاحك الخاص للاتصال عبر ScraperAPI مع تفعيل الـ render=true (ضروري جداً للجافا سكريبت)
-    API_KEY = "806ec65adfba7c70b7b4e1d57d54edc7"
-    api_url = f"http://api.scraperapi.com?api_key={API_KEY}&url={url}&render=true"
+    # نستخدم مفتاحك الخاص مع خاصية render=true لتجاوز حماية الجافا سكريبت
+    api_key = "806ec65adfba7c70b7b4e1d57d54edc7"
+    api_url = f"http://api.scraperapi.com?api_key={api_key}&url={url}&render=true"
     
     try:
         response = requests.get(api_url, timeout=60)
+        if response.status_code != 200:
+            return {"error": f"فشل الاتصال: رمز الخطأ {response.status_code}"}
         html = response.text
     except Exception as e:
-        return {"error": f"فشل الاتصال: {str(e)}"}
+        return {"error": f"خطأ في الاتصال: {str(e)}"}
 
     soup = BeautifulSoup(html, 'html.parser')
 
-    # البحث عن بيانات المنتج (هذا هو المكان الذي يختبئ فيه السعر والعنوان)
-    json_data = None
-    state_match = re.search(r'window\.__INITIAL_STATE__\s*=\s*(\{.*?\});', html, re.DOTALL)
-    if state_match:
-        try: json_data = json.loads(state_match.group(1))
-        except: pass
+    # محاولة استخراج العنوان
+    title = soup.find('h1').text.strip() if soup.find('h1') else "منتج بدون عنوان"
     
-    product = json_data.get('product', {}).get('productDetail', {}) if json_data else {}
-    
-    # 1. استخراج العنوان والسعر بدقة
-    title = product.get('name', '')
-    if not title: title = soup.title.string if soup.title else "منتج بدون عنوان"
-    
-    p_val = product.get('price', {}).get('sellingPrice', {}).get('value', 0.0)
-    price = float(p_val) if p_val else 0.0
+    # محاولة استخراج السعر
+    price_span = soup.find('span', {'class': 'prc-dsc'})
+    price = 0.0
+    if price_span:
+        try:
+            price = float(price_span.text.replace('TL', '').replace(',', '.').strip())
+        except:
+            price = 0.0
 
-    # 2. استخراج المقاسات (من صندوق البيانات)
-    avail = []
-    out = []
-    variants = product.get('allVariants', product.get('variants', []))
-    for v in variants:
-        val = v.get('value', '')
-        if val:
-            if v.get('inStock', False): avail.append(val)
-            else: out.append(val)
-    desc = f"✅ متوفر: {', '.join(avail) if avail else 'لا يوجد'}\n❌ نفد: {', '.join(out) if out else 'لا يوجد'}"
+    # استخراج الصور بفلتر آمن
+    images = []
+    # البحث عن كل صور المنتج (تتغير كلاسات الصور لذا نستخدم البحث الشامل)
+    img_tags = soup.find_all('img')
+    for img in img_tags:
+        src = img.get('src', '')
+        if 'cdn.dsmcdn.com' in src and '/ty/' in src:
+            # تنظيف رابط الصورة
+            clean_img = src.split('?')[0]
+            if clean_img not in images:
+                images.append(clean_img)
 
-    # 3. صيد الصور (فلتر صارم لحذف أي شعار)
-    raw_imgs = product.get('images', [])
-    final_imgs = []
-    # قائمة حظر تشمل كل ما هو ليس "صورة منتج"
-    blacklist = ['logo', 'icon', 'saudibusiness', 'frontend', 'maroof', 'mada', 'delivery']
-    
-    for img in raw_imgs:
-        if isinstance(img, str):
-            if not any(bw in img.lower() for bw in blacklist):
-                if not img.startswith('http'): img = f"https://cdn.dsmcdn.com{img}"
-                final_imgs.append(img)
-                
-    return {"title": title, "price": price, "desc": desc, "images": final_imgs, "url": url, "sku": "N/A"}
+    return {"title": title, "price": price, "images": images[:6], "url": url}
 
 # ==========================================
-# 3. واجهة المستخدم
+# 3. الواجهة
 # ==========================================
-st.title("🛍️ سوق مدار - الإصدار القوي")
-url = st.text_input("🔗 رابط المنتج:")
+st.title("🛍️ سوق مدار - الإصدار الثابت")
+url = st.text_input("🔗 ضع رابط المنتج هنا:")
 
-if st.button("🚀 جلب وتحليل"):
-    with st.spinner("جاري الاختراق عبر ScraperAPI..."):
+if st.button("🚀 جلب البيانات"):
+    with st.spinner("جاري التواصل مع ترينديول عبر API..."):
         res = fetch_product(url)
         if "error" in res:
             st.error(res["error"])
         else:
             st.success("تم السحب بنجاح!")
             st.subheader(res['title'])
-            st.write(f"**السعر:** {res['price']} SAR")
-            st.info(res['desc'])
+            st.write(f"السعر: {res['price']} SAR")
             
             # عرض الصور
             cols = st.columns(3)
-            for i, img in enumerate(res['images'][:6]):
+            for i, img in enumerate(res['images']):
                 cols[i % 3].image(img)
             
-            if st.button("💾 حفظ المنتج"):
+            if st.button("💾 حفظ في قاعدة البيانات"):
                 conn = sqlite3.connect('madar_products.db')
                 c = conn.cursor()
-                c.execute("INSERT INTO products (title, price, desc, images, url, sku) VALUES (?, ?, ?, ?, ?, ?)",
-                          (res['title'], res['price'], res['desc'], json.dumps(res['images']), res['url'], 'N/A'))
+                c.execute("INSERT INTO products (title, price, desc, images, url) VALUES (?, ?, ?, ?, ?)",
+                          (res['title'], res['price'], "تم السحب بنجاح", json.dumps(res['images']), res['url']))
                 conn.commit()
                 conn.close()
                 st.success("تم الحفظ!")
