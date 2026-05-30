@@ -1,39 +1,53 @@
-%load_ext cudf.pandas
-import pandas as pd
-import numpy as np
+import streamlit as st
+import time
 
-# Randomly generated dataset of parking violations-
-# Define the number of rows
-num_rows = 1000000
+# إعدادات عنوان واجهة النظام
+st.set_page_config(page_title="نظام جلب المنتجات الذكي", layout="centered")
+st.title("📦 نظام جلب المنتجات واختبار التسعير")
+st.write("أدخل رابط المنتج وحدد عمولتك الخاصة لتوليد بيانات المنتج فوراً.")
 
-states = ["NY", "NJ", "CA", "TX"]
-violations = ["Double Parking", "Expired Meter", "No Parking",
-              "Fire Hydrant", "Bus Stop"]
-vehicle_types = ["SUBN", "SDN"]
+# 1. مدخلات المستخدم (الرابط والعمولة المتغيرة)
+product_url = st.text_input("🔗 ألصق رابط المنتج هنا (أمازون، نون، نمشي، ترنديوول):", "")
 
-# Create a date range
-start_date = "2022-01-01"
-end_date = "2022-12-31"
-dates = pd.date_range(start=start_date, end=end_date, freq='D')
+# خانة رقمية مرنة لإدخال العمولة حسب رغبتك لكل منتج
+commission = st.number_input("💰 حدد قيمة عمولتك لهذا المنتج (بالريال):", min_value=0.0, value=15.0, step=1.0)
 
-# Generate random data
-data = {
-    "Registration State": np.random.choice(states, size=num_rows),
-    "Violation Description": np.random.choice(violations, size=num_rows),
-    "Vehicle Body Type": np.random.choice(vehicle_types, size=num_rows),
-    "Issue Date": np.random.choice(dates, size=num_rows),
-    "Ticket Number": np.random.randint(1000000000, 9999999999, size=num_rows)
-}
+# 2. زر الجلب والتسعير
+if st.button("🚀 جلب الآن"):
+    if not product_url:
+        st.warning("رجاءً ضع رابط المنتج أولاً!")
+    else:
+        with st.spinner("جاري قراءة الرابط واستخراج البيانات..."):
+            # محاكاة لعملية الجلب (هنا نضع بيانات افتراضية للاختبار وبناء الواجهة)
+            # مستقبلاً سيتم استبدال هذا الجزء بسكريبت الـ Scraping الفعلي لكل موقع
+            time.sleep(2)  # محاكاة وقت الانتظار
+            
+            original_price = 150.0  # السعر المستخرج افتراضياً من الموقع الأصلي
+            final_price = original_price + commission # الحسبة التلقائية بناءً على عمولتك المتغيرة
+            
+            st.success("تم جلب بيانات المنتج بنجاح!")
+            st.markdown("---")
+            
+            # 3. عرض النتائج أمامك للمراجعة
+            col1, col2 = st.columns([1, 2])
+            
+            with col1:
+                # عرض صورة افتراضية للمنتج
+                st.image("https://unsplash.com", caption="صورة المنتج المستخرجة", use_container_width=True)
+            
+            with col2:
+                st.subheader("📋 تفاصيل المنتج المستخرج:")
+                st.write("**اسم المنتج:** ساعة يد ذكية مقاومة للماء - إصدار بريميوم")
+                st.write(f"**السعر الأصلي في الموقع:** {original_price} ريال")
+                st.info(f"**عمولتك المحددة:** {commission} ريال")
+                st.metric(label="💵 السعر النهائي للبيع في سلة (شامل العمولة)", value=f"{final_price} ريال")
+            
+            st.markdown("---")
+            
+            # 4. زر الإضافة (المستقبلي لـ سلة)
+            # حالياً عند الضغط عليه يظهر لك رسالة محاكاة لكيفية عمل الـ API مستقبلاً
+            if st.button("➕ إضافة المنتج إلى متجر سلة"):
+                st.toast("🔗 جاري الاتصال بـ Salla API...")
+                time.sleep(1)
+                st.success(f"🎉 تم إنشاء المنتج بنجاح في سلة بسعر {final_price} ريال!")
 
-# Create a DataFrame
-df = pd.DataFrame(data)
-
-# Which parking violation is most commonly committed by vehicles from various U.S states?
-
-(df[["Registration State", "Violation Description"]]  # get only these two columns
- .value_counts()  # get the count of offences per state and per type of offence
- .groupby("Registration State")  # group by state
- .head(1)  # get the first row in each group (the type of offence with the largest count)
- .sort_index()  # sort by state name
- .reset_index()
-)
