@@ -63,11 +63,12 @@ def get_all_products():
 init_db()
 
 # ==========================================
-# 2. إعدادات واجهة النظام
+# 2. إعدادات واجهة النظام والربط
 # ==========================================
 st.set_page_config(page_title="نظام إدارة منتجات | سوق مدار", layout="centered", page_icon="📦")
 
 st.sidebar.title("📦 لوحة تحكم سوق مدار")
+SALLA_TOKEN = st.sidebar.text_input("🔑 Salla Access Token:", type="password", help="أدخل توكن سلة لتمكين الرفع المباشر للمتجر")
 st.sidebar.write("---")
 menu = st.sidebar.radio("اختر قسم:", ["🚀 سحب منتج جديد", "🗄️ مستودع المنتجات"])
 
@@ -75,7 +76,47 @@ if 'editing_id' not in st.session_state:
     st.session_state['editing_id'] = None
 
 # ==========================================
-# 3. محرك السحب الأصلي (مزود ببحث عنيف للمقاسات)
+# 3. دالة الرفع إلى منصة سلة (Salla API)
+# ==========================================
+def upload_to_salla(token, product_data):
+    url = "https://api.salla.dev/admin/v2/products"
+    
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+    
+    # تجهيز خيارات المقاسات ليقرأها نظام سلة كـ "خيارات منتج"
+    options = []
+    if product_data.get('sizes_list'):
+        size_values = [{"name": str(size)} for size in product_data['sizes_list']]
+        options.append({
+            "name": "المقاس",
+            "values": size_values
+        })
+    
+    payload = {
+        "name": product_data['title'],
+        "price": product_data['final_price'],
+        "sku": product_data['sku'],
+        "product_type": "product",
+        "quantity": 100, 
+        "description": product_data['description'],
+        "options": options
+    }
+    
+    # إضافة الصور إذا وُجدت
+    if product_data.get('images'):
+        payload["images"] = [{"original": img} for img in product_data['images']]
+        
+    try:
+        response = requests.post(url, json=payload, headers=headers)
+        return response.status_code, response.json()
+    except Exception as e:
+        return 500, {"error": str(e)}
+
+# ==========================================
+# 4. محرك السحب الأصلي (مزود ببحث عنيف للمقاسات)
 # ==========================================
 def fetch_trendyol_product(url):
     clean_url = url.split('?')[0]
@@ -136,11 +177,9 @@ def fetch_trendyol_product(url):
     color_match = re.search(r'"color":\s*"([^"]+)"', html)
     if color_match: color_val = color_match.group(1)
 
-    # ==== المحرك العنيف (Brute-Force) لاستخراج المقاسات ====
     available_sizes = []
     out_of_stock_sizes = []
 
-    # 1. البحث عبر العناصر المرئية (DOM) إذا تم تجهيزها مسبقاً
     for el in soup.find_all(['div', 'span', 'button']):
         class_str = ' '.join(el.get('class', [])).lower()
         if any(x in class_str for x in ['sp-itm', 'size-variant', 'vrnt-item', 'size-item']):
@@ -151,7 +190,6 @@ def fetch_trendyol_product(url):
                 else:
                     available_sizes.append(val)
 
-    # 2. البحث بالتشريح المباشر للنص متجاهلين تعقيد JSON وحمايته
     if not available_sizes and not out_of_stock_sizes:
         pattern1 = r'"(?:value|attributeValue|name)"\s*:\s*"?([^",}\s]{1,10})"?\s*,.{0,100}?"(?:inStock|isSellable)"\s*:\s*(true|false)'
         pattern2 = r'"(?:inStock|isSellable)"\s*:\s*(true|false)\s*,.{0,100}?"(?:value|attributeValue|name)"\s*:\s*"?([^",}\s]{1,10})"?\s*'
@@ -161,7 +199,6 @@ def fetch_trendyol_product(url):
                 start, end = m.span()
                 block = html[max(0, start - 40) : min(len(html), end + 40)].lower()
                 
-                # تخطي أي شيء يدل على أنه لون أو رابط
                 if any(c in block for c in ['color', 'renk', 'لون', 'image', 'brand', 'url']):
                     continue
                 
@@ -172,15 +209,12 @@ def fetch_trendyol_product(url):
                 
                 stock = (stock_str == 'true')
                 
-                # التأكد من نظافة المقاس المستخرج
                 if val and not val.startswith('http') and len(val) <= 8 and re.search(r'[a-zA-Z0-9]', val):
                     if stock: available_sizes.append(val)
                     else: out_of_stock_sizes.append(val)
 
-    # إزالة التكرار مع الحفاظ على الترتيب والتحويل لأحرف كبيرة
     final_avail = list(dict.fromkeys([str(s).upper() for s in available_sizes]))
     final_out = list(dict.fromkeys([str(s).upper() for s in out_of_stock_sizes if str(s).upper() not in final_avail]))
-    # ================================================================
 
     raw_images = re.findall(r'(https://cdn\.dsmcdn\.com/[^"\'\s<>]+?\.(?:jpg|jpeg|webp|png))', html, re.IGNORECASE)
     blacklist = ['logo', 'icon', 'flag', 'pci', 'iso', 'trust', 'badge', 'payment', 'footer', 'asset', 'saudibusiness', 'sbc', 'stamp', 'rating', 'maroof', 'mada', 'visa', 'mastercard', 'applepay', 'stcpay', 'vat', 'tax', 'norton', 'size-chart', 'delivery', 'campaign', 'brand']
@@ -216,11 +250,12 @@ def fetch_trendyol_product(url):
         "sku": sku if sku else "N/A",
         "price": price, 
         "description": final_description, 
-        "images": final_images
+        "images": final_images,
+        "sizes_list": final_avail # تم إضافة هذا السطر خصيصاً لمنصة سلة
     }
 
 # ==========================================
-# 4. واجهة قسم: سحب منتج جديد
+# 5. واجهة قسم: سحب منتج جديد
 # ==========================================
 if menu == "🚀 سحب منتج جديد":
     st.session_state['editing_id'] = None 
@@ -262,7 +297,8 @@ if menu == "🚀 سحب منتج جديد":
                         "final_price": final_price,
                         "description": result['description'],
                         "images": result['images'],
-                        "url": product_url
+                        "url": product_url,
+                        "sizes_list": result.get('sizes_list', [])
                     }
 
     if 'current_product' in st.session_state:
@@ -285,13 +321,30 @@ if menu == "🚀 سحب منتج جديد":
                 cols[i % 3].image(img_url, use_container_width=True)
             
         st.write("---")
-        if st.button("💾 حفظ المنتج في مستودع المنتجات", type="primary", use_container_width=True):
-            save_product(p['title'], p['sku'], p['supplier_price'], p['final_price'], p['description'], p['images'], p['url'])
-            st.success("تم حفظ المنتج بنجاح! يمكنك إدارته من المستودع.")
-            del st.session_state['current_product'] 
+        
+        col_btn1, col_btn2 = st.columns(2)
+        
+        with col_btn1:
+            if st.button("💾 حفظ في المستودع المحلي", use_container_width=True):
+                save_product(p['title'], p['sku'], p['supplier_price'], p['final_price'], p['description'], p['images'], p['url'])
+                st.success("تم الحفظ في مستودع النظام!")
+                
+        with col_btn2:
+            if st.button("🚀 رفع المنتج إلى متجر سلة", type="primary", use_container_width=True):
+                if not SALLA_TOKEN:
+                    st.error("يرجى إدخال (Salla Access Token) في القائمة الجانبية أولاً.")
+                else:
+                    with st.spinner("جاري رفع المنتج إلى متجرك في سلة..."):
+                        status, resp = upload_to_salla(SALLA_TOKEN, p)
+                        if status in [200, 201]:
+                            st.success("تم إنشاء المنتج بنجاح في متجرك بسلة مع كامل المقاسات والصور!")
+                            save_product(p['title'], p['sku'], p['supplier_price'], p['final_price'], p['description'], p['images'], p['url']) # حفظ تلقائي كنسخة احتياطية
+                            del st.session_state['current_product']
+                        else:
+                            st.error(f"حدث خطأ أثناء الرفع: {resp}")
 
 # ==========================================
-# 5. واجهة قسم: مستودع المنتجات (الإدارة الشاملة)
+# 6. واجهة قسم: مستودع المنتجات (الإدارة الشاملة)
 # ==========================================
 elif menu == "🗄️ مستودع المنتجات":
     st.title("🗄️ إدارة مستودع سوق مدار")
@@ -378,4 +431,4 @@ elif menu == "🗄️ مستودع المنتجات":
                             delete_product(prod_id)
                             st.rerun()
                     
-                    st.write("---") 
+                    st.write("---")
