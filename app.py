@@ -75,7 +75,7 @@ if 'editing_id' not in st.session_state:
     st.session_state['editing_id'] = None
 
 # ==========================================
-# 3. محرك السحب الأصلي (مع إصلاح استخراج المقاسات فقط)
+# 3. محرك السحب الأصلي (مع محرك ذكي للمقاسات)
 # ==========================================
 def fetch_trendyol_product(url):
     clean_url = url.split('?')[0]
@@ -107,8 +107,6 @@ def fetch_trendyol_product(url):
     price = 0.0
     sku = ""
     color_val = ""
-    available_sizes = []
-    out_of_stock_sizes = []
     
     meta_title = soup.find('meta', property='og:title')
     if meta_title: 
@@ -138,27 +136,66 @@ def fetch_trendyol_product(url):
     color_match = re.search(r'"color":\s*"([^"]+)"', html)
     if color_match: color_val = color_match.group(1)
 
-    # ==== التعديل الدقيق لإصلاح المقاسات بدون استخدام Regex معقد ====
-    for script in soup.find_all('script'):
-        if script.string and '__INITIAL_STATE__' in script.string:
-            try:
-                # قص النص المعقد لاستخراج ملف البيانات بأمان
-                json_text = script.string.split('window.__INITIAL_STATE__=')[1].split(';window.')[0]
-                if json_text.endswith(';'): json_text = json_text[:-1]
+    # ==== محرك ذكي وحصري لاستخراج المقاسات من النظامين (العربي والتركي) ====
+    available_sizes = []
+    out_of_stock_sizes = []
+    
+    def extract_sizes_from_data(data_obj):
+        def search_node(node):
+            if isinstance(node, dict):
+                for key in ['allVariants', 'variants', 'sizes', 'options']:
+                    if key in node and isinstance(node[key], list):
+                        for item in node[key]:
+                            if isinstance(item, dict):
+                                val = str(item.get('value') or item.get('attributeValue') or item.get('name') or '').strip()
+                                attr_name = str(item.get('attributeName') or item.get('type') or '').lower()
+                                
+                                # تجاهل الألوان إذا ظهرت بالخطأ كمقاس
+                                if any(c in attr_name for c in ['color', 'renk', 'لون']):
+                                    continue
+                                
+                                in_stock = item.get('inStock')
+                                if in_stock is None:
+                                    in_stock = item.get('isSellable')
+                                    
+                                if val and len(val) <= 15 and in_stock is not None:
+                                    if in_stock:
+                                        available_sizes.append(val)
+                                    else:
+                                        out_of_stock_sizes.append(val)
+                # استكمال البحث العميق
+                for v in node.values():
+                    search_node(v)
+            elif isinstance(node, list):
+                for item in node:
+                    search_node(item)
                     
-                data = json.loads(json_text)
-                product_data = data.get('product', {}).get('product', {})
-                all_variants = product_data.get('allVariants', [])
-                
-                for variant in all_variants:
-                    val = variant.get('value', '')
-                    if val:
-                        if variant.get('inStock', False): 
-                            available_sizes.append(val)
-                        else: 
-                            out_of_stock_sizes.append(val)
-            except Exception as e:
-                pass
+        search_node(data_obj)
+
+    # 1. البحث في نظام Next.js (المستخدم في النسخة العربية والعالمية)
+    next_data_script = soup.find('script', id='__NEXT_DATA__')
+    if next_data_script:
+        try:
+            data = json.loads(next_data_script.string)
+            extract_sizes_from_data(data)
+        except:
+            pass
+
+    # 2. البحث في نظام INITIAL_STATE (المستخدم في النسخة التركية الأصلية)
+    if not available_sizes and not out_of_stock_sizes:
+        for script in soup.find_all('script'):
+            if script.string and '__INITIAL_STATE__' in script.string:
+                try:
+                    json_text = script.string.split('window.__INITIAL_STATE__=')[1].split(';window.')[0]
+                    if json_text.endswith(';'): json_text = json_text[:-1]
+                    data = json.loads(json_text)
+                    extract_sizes_from_data(data)
+                except:
+                    pass
+    
+    # إزالة المقاسات المكررة مع الحفاظ على ترتيبها
+    final_avail = list(dict.fromkeys(available_sizes))
+    final_out = list(dict.fromkeys([s for s in out_of_stock_sizes if s not in final_avail]))
     # ================================================================
 
     raw_images = re.findall(r'(https://cdn\.dsmcdn\.com/[^"\'\s<>]+?\.(?:jpg|jpeg|webp|png))', html, re.IGNORECASE)
@@ -180,12 +217,10 @@ def fetch_trendyol_product(url):
     final_desc_parts = []
     if color_val: final_desc_parts.append(f"🎨 **اللون:** {color_val}")
     
-    if available_sizes:
-        available_sizes = list(dict.fromkeys(available_sizes))
-        final_desc_parts.append(f"✅ **مقاسات متوفرة للبيع:** {', '.join(available_sizes)}")
-    if out_of_stock_sizes:
-        out_of_stock_sizes = list(dict.fromkeys(out_of_stock_sizes))
-        final_desc_parts.append(f"❌ **مقاسات نفدت:** {', '.join(out_of_stock_sizes)}")
+    if final_avail:
+        final_desc_parts.append(f"✅ **مقاسات متوفرة للبيع:** {', '.join(final_avail)}")
+    if final_out:
+        final_desc_parts.append(f"❌ **مقاسات نفدت:** {', '.join(final_out)}")
 
     final_description = "\n".join(final_desc_parts) if final_desc_parts else "لم يدرج المورد مواصفات إضافية."
 
@@ -359,4 +394,4 @@ elif menu == "🗄️ مستودع المنتجات":
                             delete_product(prod_id)
                             st.rerun()
                     
-                    st.write("---")
+                    st.write("---") 
