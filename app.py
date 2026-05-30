@@ -19,11 +19,11 @@ def init_db():
 init_db()
 
 # ==========================================
-# 2. محرك السحب (باستخدام مفتاحك الخاص)
+# 2. محرك السحب (باستخدام قوتك الجديدة ScraperAPI)
 # ==========================================
 def fetch_product(url):
+    # نستخدم مفتاحك الخاص للاتصال عبر ScraperAPI مع تفعيل الـ render=true (ضروري جداً للجافا سكريبت)
     API_KEY = "806ec65adfba7c70b7b4e1d57d54edc7"
-    # render=true ضرورية جداً لجلب المقاسات المخفية
     api_url = f"http://api.scraperapi.com?api_key={API_KEY}&url={url}&render=true"
     
     try:
@@ -34,22 +34,23 @@ def fetch_product(url):
 
     soup = BeautifulSoup(html, 'html.parser')
 
-    # البحث عن بيانات المنتج في الأكواد المخفية
+    # البحث عن بيانات المنتج (هذا هو المكان الذي يختبئ فيه السعر والعنوان)
     json_data = None
     state_match = re.search(r'window\.__INITIAL_STATE__\s*=\s*(\{.*?\});', html, re.DOTALL)
     if state_match:
         try: json_data = json.loads(state_match.group(1))
         except: pass
     
-    # محاولة استخراج المنتج من بيانات JSON
     product = json_data.get('product', {}).get('productDetail', {}) if json_data else {}
     
-    # العنوان والسعر
-    title = product.get('name', 'منتج غير معروف')
-    price = product.get('price', {}).get('sellingPrice', {}).get('value', 0.0)
-    sku = str(product.get('productCode', 'N/A'))
+    # 1. استخراج العنوان والسعر بدقة
+    title = product.get('name', '')
+    if not title: title = soup.title.string if soup.title else "منتج بدون عنوان"
+    
+    p_val = product.get('price', {}).get('sellingPrice', {}).get('value', 0.0)
+    price = float(p_val) if p_val else 0.0
 
-    # استخراج المقاسات
+    # 2. استخراج المقاسات (من صندوق البيانات)
     avail = []
     out = []
     variants = product.get('allVariants', product.get('variants', []))
@@ -60,9 +61,10 @@ def fetch_product(url):
             else: out.append(val)
     desc = f"✅ متوفر: {', '.join(avail) if avail else 'لا يوجد'}\n❌ نفد: {', '.join(out) if out else 'لا يوجد'}"
 
-    # استخراج الصور بفلتر صارم (بدون شعارات)
+    # 3. صيد الصور (فلتر صارم لحذف أي شعار)
     raw_imgs = product.get('images', [])
     final_imgs = []
+    # قائمة حظر تشمل كل ما هو ليس "صورة منتج"
     blacklist = ['logo', 'icon', 'saudibusiness', 'frontend', 'maroof', 'mada', 'delivery']
     
     for img in raw_imgs:
@@ -71,16 +73,16 @@ def fetch_product(url):
                 if not img.startswith('http'): img = f"https://cdn.dsmcdn.com{img}"
                 final_imgs.append(img)
                 
-    return {"title": title, "price": float(price), "desc": desc, "images": final_imgs, "url": url, "sku": sku}
+    return {"title": title, "price": price, "desc": desc, "images": final_imgs, "url": url, "sku": "N/A"}
 
 # ==========================================
 # 3. واجهة المستخدم
 # ==========================================
-st.title("🛍️ سوق مدار - الإصدار الاحترافي")
+st.title("🛍️ سوق مدار - الإصدار القوي")
 url = st.text_input("🔗 رابط المنتج:")
 
-if st.button("🚀 جلب وتحليل البيانات"):
-    with st.spinner("جاري التواصل مع المورد..."):
+if st.button("🚀 جلب وتحليل"):
+    with st.spinner("جاري الاختراق عبر ScraperAPI..."):
         res = fetch_product(url)
         if "error" in res:
             st.error(res["error"])
@@ -90,6 +92,7 @@ if st.button("🚀 جلب وتحليل البيانات"):
             st.write(f"**السعر:** {res['price']} SAR")
             st.info(res['desc'])
             
+            # عرض الصور
             cols = st.columns(3)
             for i, img in enumerate(res['images'][:6]):
                 cols[i % 3].image(img)
@@ -98,13 +101,7 @@ if st.button("🚀 جلب وتحليل البيانات"):
                 conn = sqlite3.connect('madar_products.db')
                 c = conn.cursor()
                 c.execute("INSERT INTO products (title, price, desc, images, url, sku) VALUES (?, ?, ?, ?, ?, ?)",
-                          (res['title'], res['price'], res['desc'], json.dumps(res['images']), res['url'], res['sku']))
+                          (res['title'], res['price'], res['desc'], json.dumps(res['images']), res['url'], 'N/A'))
                 conn.commit()
                 conn.close()
-                st.success("تم الحفظ في المستودع!")
-
-# عرض المستودع
-if st.checkbox("🗄️ عرض المستودع"):
-    products = get_all_products()
-    for p in products:
-        st.write(f"**{p[1]}** - {p[2]} SAR")
+                st.success("تم الحفظ!")
