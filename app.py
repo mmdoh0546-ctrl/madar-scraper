@@ -19,47 +19,58 @@ def init_db():
 init_db()
 
 # ==========================================
-# 2. محرك السحب (الأصلي الناجح)
+# 2. محرك السحب (الأصلي والمستقر)
 # ==========================================
 def fetch_product(url):
     scraper = cloudscraper.create_scraper()
     try:
-        resp = scraper.get(url, timeout=15)
+        resp = scraper.get(url, timeout=20)
         html = resp.text
-    except: return {"error": "فشل الاتصال."}
+    except: return {"error": "فشل الاتصال بالمورد."}
 
-    soup = BeautifulSoup(html, 'html.parser')
+    # استخراج البيانات من الهيكل المخفي (أكثر دقة من قراءة الصفحة)
+    json_data = {}
+    state_match = re.search(r'window\.__INITIAL_STATE__\s*=\s*(\{.*?\});', html, re.DOTALL)
+    if state_match:
+        try: json_data = json.loads(state_match.group(1))
+        except: pass
     
-    # استخراج العنوان والسعر
-    title = soup.find('h1')
-    title = title.text.strip() if title else "غير معروف"
-    price_tag = soup.find('span', class_='prc-dsc')
-    price = float(re.sub(r'[^\d.]', '', price_tag.text.replace(',', '.'))) if price_tag else 0.0
+    product = json_data.get('product', {}).get('productDetail', {})
     
-    # استخراج المقاسات
-    sizes_match = re.findall(r'"value":"([^"]+)","inStock":(true|false)', html)
-    avail = [s[0] for s in sizes_match if s[1] == 'true']
-    out = [s[0] for s in sizes_match if s[1] == 'false']
-    desc = f"✅ متوفر: {', '.join(avail) if avail else 'غير محدد'}\n❌ نفد: {', '.join(out) if out else 'لا يوجد'}"
+    # العنوان والسعر
+    title = product.get('name', 'منتج غير معروف')
+    price = product.get('price', {}).get('sellingPrice', {}).get('value', 0.0)
+    sku = str(product.get('productCode', 'N/A'))
 
-    # استخراج الصور (فلتر الصور الصارم)
-    all_imgs = re.findall(r'(https://cdn\.dsmcdn\.com/[^"\'\s<>]+?\.(?:jpg|jpeg|webp|png))', html)
+    # المقاسات (المتوفرة والنافدة)
+    available_sizes = []
+    out_of_stock = []
+    variants = product.get('allVariants', product.get('variants', []))
+    for v in variants:
+        val = v.get('value', '')
+        if val:
+            if v.get('inStock', False): available_sizes.append(val)
+            else: out_of_stock.append(val)
+    
+    desc = f"✅ متوفر: {', '.join(available_sizes) if available_sizes else 'لا يوجد'}\n❌ نفد: {', '.join(out_of_stock) if out_of_stock else 'لا يوجد'}"
+
+    # الصور (فلتر صارم جداً لحذف الشعارات)
+    raw_imgs = product.get('images', [])
     final_imgs = []
-    # الحظر الصارم (شعار المركز السعودي واللوقو)
-    blacklist = ['logo', 'icon', 'flag', 'saudibusiness', 'sbc', 'stamp', 'frontend']
+    blacklist = ['logo', 'icon', 'flag', 'saudibusiness', 'frontend', 'maroof', 'mada']
     
-    for img in all_imgs:
-        if 'productmedia' in img.lower() or '/ty/' in img.lower():
-            if not any(bw in img.lower() for bw in blacklist):
-                clean = re.sub(r'/mnresize/\d+/\d+/', '/', img)
-                if clean not in final_imgs: final_imgs.append(clean)
-                
-    return {"title": title, "price": price, "desc": desc, "images": final_imgs, "url": url}
+    for img in raw_imgs:
+        # التأكد أن الصورة هي صورة منتج وليست شعاراً
+        if not any(bw in img.lower() for bw in blacklist):
+            if not img.startswith('http'): img = f"https://cdn.dsmcdn.com{img}"
+            final_imgs.append(img)
+
+    return {"title": title, "price": float(price), "desc": desc, "images": final_imgs, "url": url, "sku": sku}
 
 # ==========================================
 # 3. واجهة المستخدم
 # ==========================================
-st.title("🛍️ سحب المنتجات لمتجر سوق مدار")
+st.title("🛍️ سوق مدار - الإصدار المستقر")
 url = st.text_input("🔗 رابط المنتج:")
 
 if st.button("🚀 جلب وتحليل"):
@@ -67,10 +78,11 @@ if st.button("🚀 جلب وتحليل"):
     if "error" in res:
         st.error(res["error"])
     else:
-        st.success("تم سحب البيانات!")
-        st.subheader(res['title'])
-        st.write(f"السعر: {res['price']} SAR")
+        st.success("تم السحب بنجاح!")
+        st.write(f"**العنوان:** {res['title']}")
+        st.write(f"**السعر:** {res['price']} SAR")
         st.info(res['desc'])
+        
         # عرض الصور بصفوف
         cols = st.columns(3)
         for i, img in enumerate(res['images'][:6]):
@@ -80,7 +92,13 @@ if st.button("🚀 جلب وتحليل"):
             conn = sqlite3.connect('madar_products.db')
             c = conn.cursor()
             c.execute("INSERT INTO products (title, supplier_price, final_price, description, images, url, sku) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                      (res['title'], res['price'], res['price']+20, res['desc'], json.dumps(res['images']), res['url'], 'N/A'))
+                      (res['title'], res['price'], res['price']+20, res['desc'], json.dumps(res['images']), res['url'], res['sku']))
             conn.commit()
             conn.close()
-            st.success("تم الحفظ!")
+            st.success("تم الحفظ في المستودع!")
+
+# عرض المستودع
+if st.checkbox("🗄️ عرض المستودع"):
+    products = get_all_products()
+    for p in products:
+        st.write(f"**{p[1]}** - {p[3]} SAR")
