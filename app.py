@@ -5,7 +5,6 @@ from bs4 import BeautifulSoup
 import json
 import re
 import sqlite3
-import urllib.parse
 
 # ==========================================
 # 1. إعدادات قاعدة البيانات (مستودع سوق مدار)
@@ -76,133 +75,114 @@ if 'editing_id' not in st.session_state:
     st.session_state['editing_id'] = None
 
 # ==========================================
-# 3. محرك السحب النووي (اختراق الحظر واستخراج شامل)
+# 3. محرك السحب الأصلي (مستقر، مباشر، ودقيق)
 # ==========================================
-def get_html_nuclear(url):
-    """دالة تحاول جلب الصفحة عبر عدة أنفاق لتخطي حظر Streamlit IP"""
+def fetch_trendyol_product(url):
     clean_url = url.split('?')[0]
-    encoded_url = urllib.parse.quote(clean_url, safe='')
+    html = ""
     
+    # 1. الاتصال المباشر الصافي (الطريقة التي نجحت سابقاً)
     headers = {
         'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+        'Accept-Language': 'ar,en-US;q=0.9'
     }
     
-    # النفق الأول: اتصال مباشر كعناكب بحث (سريع)
-    try:
-        resp = requests.get(clean_url, headers=headers, timeout=10)
-        if resp.status_code == 200 and "Just a moment" not in resp.text and "cloudflare" not in resp.text.lower(): 
-            return resp.text
-    except: pass
-
-    # النفق الثاني: API AllOrigins (تغيير مسار IP)
-    try:
-        resp = requests.get(f"https://api.allorigins.win/get?url={encoded_url}", timeout=15)
-        if resp.status_code == 200:
-            html = resp.json().get('contents', '')
-            if html and "Just a moment" not in html: return html
-    except: pass
-
-    # النفق الثالث: Cloudscraper
     try:
         scraper = cloudscraper.create_scraper()
         resp = scraper.get(clean_url, timeout=15)
-        if resp.status_code == 200 and "Just a moment" not in resp.text: return resp.text
+        if resp.status_code == 200: html = resp.text
     except: pass
     
-    return "BLOCKED" # إشارة بأن كل السيرفرات محظورة
+    if not html or "cloudflare" in html.lower():
+        try:
+            resp = requests.get(clean_url, headers=headers, timeout=15)
+            if resp.status_code == 200: html = resp.text
+        except: pass
 
-def fetch_trendyol_product(url):
-    html = get_html_nuclear(url)
-    
-    if html == "BLOCKED":
-        return {"error": "🚫 ترينديول يفرض حظراً كاملاً على سيرفرات Streamlit في هذه اللحظة. يرجى المحاولة لاحقاً."}
     if not html:
-        return {"error": "الرابط خاطئ أو المنتج غير موجود."}
+        return {"error": "فشل الاتصال بالرابط. يرجى التأكد من جودة الإنترنت."}
 
+    soup = BeautifulSoup(html, 'html.parser')
+    
     title = ""
     price = 0.0
     sku = ""
-    raw_images = []
     color_val = ""
     available_sizes = []
     out_of_stock_sizes = []
-    attr_lines = []
     
-    # 1. استخراج SKU
-    sku_match = re.search(r'-p-(\d+)', url.split('?')[0])
+    # 2. استخراج العنوان والسعر من (الأساسيات الثابتة للموقع)
+    meta_title = soup.find('meta', property='og:title')
+    if meta_title: 
+        title = meta_title.get('content', '').replace(" - Trendyol", "").strip()
+        
+    meta_price = soup.find('meta', property='product:price:amount')
+    if meta_price:
+        try: price = float(meta_price.get('content', '0').replace(',', '.'))
+        except: pass
+
+    # إذا فشل الميتا تاج، نستخدم JSON-LD كخطة بديلة
+    if not title or price == 0.0:
+        for script in soup.find_all('script', type='application/ld+json'):
+            if script.string and 'Product' in script.string:
+                try:
+                    data = json.loads(script.string)
+                    p_data = data[0] if isinstance(data, list) else data
+                    if not title: title = p_data.get('name', '')
+                    if price == 0.0:
+                        offers = p_data.get('offers', {})
+                        if isinstance(offers, list) and len(offers) > 0: offers = offers[0]
+                        price = float(offers.get('price', 0.0))
+                except: pass
+
+    # 3. استخراج SKU
+    sku_match = re.search(r'-p-(\d+)', clean_url)
     if sku_match: sku = sku_match.group(1)
 
-    # 2. كشاف الرادار المطلق (البحث عن البيانات في أي مكان)
-    # العنوان
-    title_match = re.search(r'<meta\s+property="og:title"\s+content="([^"]+)"', html)
-    if title_match: title = title_match.group(1).replace(" - Trendyol", "").strip()
-    if not title:
-        title_tag = BeautifulSoup(html, 'html.parser').find('title')
-        if title_tag: title = title_tag.text.replace(" - Trendyol", "").strip()
+    # 4. استخراج الألوان والمقاسات باستخدام Regex مباشر (بدون تدمير الكود)
+    color_match = re.search(r'"color":\s*"([^"]+)"', html)
+    if color_match: color_val = color_match.group(1)
 
-    # السعر (قناص الأسعار)
-    price_match = re.search(r'"sellingPrice":\s*\{"value":\s*([\d.]+)\}', html)
-    if not price_match: price_match = re.search(r'"price":\s*([\d.]+)', html)
-    if not price_match: price_match = re.search(r'<meta\s+property="product:price:amount"\s+content="([\d.]+)"', html)
-    if price_match: price = float(price_match.group(1))
-
-    # 3. محاولة استخراج المقاسات والمواصفات من البيانات المخفية
-    product_data = None
-    state_match = re.search(r'window\.__INITIAL_STATE__\s*=\s*(\{.*?\});', html, re.DOTALL)
-    if state_match:
-        try: product_data = json.loads(state_match.group(1)).get('product', {}).get('productDetail', {})
+    variants_match = re.search(r'"allVariants":\s*(\[.*?\])', html) or re.search(r'"variants":\s*(\[.*?\])', html)
+    if variants_match:
+        try:
+            variants_data = json.loads(variants_match.group(1))
+            for v in variants_data:
+                val = v.get('value', '')
+                if val:
+                    if v.get('inStock', False): available_sizes.append(val)
+                    else: out_of_stock_sizes.append(val)
         except: pass
-    else:
-        next_match = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
-        if next_match:
-            try: 
-                data = json.loads(next_match.group(1))
-                product_data = str(data) # تحويله لنص للبحث السريع إذا فشل الهيكل
-            except: pass
 
-    # إذا وجدنا الهيكل المنظم، نستخرج منه بدقة
-    if isinstance(product_data, dict) and product_data:
-        color_val = product_data.get('color', '')
-        for v in product_data.get('allVariants', product_data.get('variants', [])):
-            val = v.get('value', '')
-            if val:
-                if v.get('inStock', False): available_sizes.append(val)
-                else: out_of_stock_sizes.append(val)
-        for attr in product_data.get('attributes', []):
-            k = attr.get('key', {}).get('name', '')
-            v = attr.get('value', {}).get('name', '')
-            if k and v:
-                attr_lines.append(f"• {k}: {v}")
-                if k.lower() in ['renk', 'color', 'لون'] and not color_val: color_val = v
-
-    # 4. قناص الصور (يجلب صور المنتجات فقط عبر دلالة /ty/ التي تميز المنتجات)
-    found_imgs = re.findall(r'(https://cdn\.dsmcdn\.com/ty/[^"\'\s<>]+?\.(?:jpg|jpeg|webp|png))', html, re.IGNORECASE)
-    if not found_imgs:
-        found_imgs = re.findall(r'(https://cdn\.dsmcdn\.com/[^"\'\s<>]+?\.(?:jpg|jpeg|webp|png))', html, re.IGNORECASE)
-    raw_images.extend(found_imgs)
-
-    # الفلتر الفولاذي للتنظيف
-    blacklist = ['logo', 'icon', 'flag', 'pci', 'iso', 'trust', 'badge', 'payment', 'footer', 'asset', 'saudibusiness', 'sbc', 'stamp', 'rating', 'maroof', 'mada', 'visa', 'mastercard', 'applepay', 'stcpay', 'vat', 'tax', 'norton', 'size-chart']
-    final_images = []
+    # 5. استخراج الصور وتنقيتها بالفلتر الفولاذي
+    raw_images = re.findall(r'(https://cdn\.dsmcdn\.com/[^"\'\s<>]+?\.(?:jpg|jpeg|webp|png))', html, re.IGNORECASE)
+    blacklist = ['logo', 'icon', 'flag', 'pci', 'iso', 'trust', 'badge', 'payment', 'footer', 'asset', 'saudibusiness', 'sbc', 'stamp', 'rating', 'maroof', 'mada', 'visa', 'mastercard', 'applepay', 'stcpay', 'vat', 'tax', 'norton', 'size-chart', 'delivery', 'campaign', 'brand']
     
+    final_images = []
+    # الأولوية لصور المنتج الحقيقية (تحتوي على productmedia أو ty)
     for img in raw_images:
         clean_img = re.sub(r'/mnresize/\d+/\d+/', '/', img) 
         if not any(bad_word in clean_img.lower() for bad_word in blacklist):
-            if clean_img not in final_images:
+            if ('productmedia' in clean_img or '/ty/' in clean_img) and clean_img not in final_images:
+                final_images.append(clean_img)
+                
+    # إذا لم يجد شيئاً، يخفف الفلتر قليلاً
+    if not final_images:
+        for img in raw_images:
+            clean_img = re.sub(r'/mnresize/\d+/\d+/', '/', img) 
+            if not any(bad_word in clean_img.lower() for bad_word in blacklist) and clean_img not in final_images:
                 final_images.append(clean_img)
 
-    # تجميع الوصف
+    # 6. تجميع الوصف
     final_desc_parts = []
     if color_val: final_desc_parts.append(f"🎨 **اللون:** {color_val}")
-    if available_sizes: final_desc_parts.append(f"✅ **مقاسات متوفرة:** {', '.join(available_sizes)}")
-    if out_of_stock_sizes: final_desc_parts.append(f"❌ **نفدت كميتها:** {', '.join(out_of_stock_sizes)}")
-    if attr_lines: final_desc_parts.append(f"\n📌 **المواصفات الفنية:**\n" + "\n".join(attr_lines))
+    if available_sizes: final_desc_parts.append(f"✅ **مقاسات متوفرة للبيع:** {', '.join(available_sizes)}")
+    if out_of_stock_sizes: final_desc_parts.append(f"❌ **مقاسات نفدت:** {', '.join(out_of_stock_sizes)}")
 
-    final_description = "\n".join(final_desc_parts) if final_desc_parts else "مواصفات إضافية غير مدرجة."
+    final_description = "\n".join(final_desc_parts) if final_desc_parts else "لم يدرج المورد مواصفات إضافية."
 
     if not title or price == 0.0:
-        return {"error": "❌ نجحنا في فتح الصفحة، لكن ترينديول أخفى السعر والعنوان بتقنية تشفير متقدمة. يرجى تجربة منتج آخر."}
+        return {"error": "فشلنا في العثور على السعر أو العنوان. المورد حظر الرابط حالياً."}
         
     return {
         "title": title, 
@@ -234,7 +214,7 @@ if menu == "🚀 سحب منتج جديد":
         if not product_url:
             st.warning("الرجاء وضع الرابط أولاً.")
         else:
-            with st.spinner("جاري اختراق الأنفاق السحابية وسحب البيانات..."):
+            with st.spinner("جاري استخراج البيانات بالأساس القوي..."):
                 result = fetch_trendyol_product(product_url)
                 
                 if "error" in result:
@@ -268,7 +248,7 @@ if menu == "🚀 سحب منتج جديد":
         price_col1.metric("السعر من المورد", f"{p['supplier_price']:.2f}")
         price_col2.metric("السعر النهائي للعميل", f"{p['final_price']:.2f}", delta=f"ربحك: {(p['final_price'] - p['supplier_price']):.2f}")
         
-        with st.expander("📝 عرض المواصفات", expanded=True):
+        with st.expander("📝 عرض المواصفات (الألوان والمقاسات)", expanded=True):
             st.markdown(p['description'])
         
         st.subheader(f"📸 صور المنتج ({len(p['images'])} صور صافية)")
@@ -360,15 +340,4 @@ elif menu == "🗄️ مستودع المنتجات":
                         st.markdown(f"**{title}**")
                         st.caption(f"رمز التخزين: {sku}")
                         st.write(f"السعر: **{f_price:.2f} SAR**")
-                        st.markdown(f"[رابط المورد الأصلي]({url})")
-                        
-                    with col_actions:
-                        if st.button("✏️ تعديل", key=f"edit_{prod_id}", use_container_width=True):
-                            st.session_state['editing_id'] = prod_id
-                            st.rerun()
-                            
-                        if st.button("🗑️ حذف", key=f"del_{prod_id}", use_container_width=True):
-                            delete_product(prod_id)
-                            st.rerun()
-                    
-                    st.write("---") 
+                        st.markdown(f"[رابط المورد الأصلي]({
