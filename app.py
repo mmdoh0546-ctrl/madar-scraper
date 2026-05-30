@@ -1,85 +1,64 @@
-import streamlit as st
-import requests
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
 from bs4 import BeautifulSoup
-import re
+import time
+import json
 
-# إعدادات واجهة النظام
-st.set_page_config(page_title="مستخرج منتجات ترنديوول", layout="centered")
-st.title("🇹🇷 نظام جلب منتجات ترنديوول الذكي")
-st.write("ضع رابط المنتج من Trendyol، حدد عمولتك، واجلب البيانات حية فوراً.")
+def fetch_product_data(product_url):
+    # 1. إعداد المتصفح الوهمي ليعمل في الخلفية بدون فتح نافذة (Headless)
+    options = webdriver.ChromeOptions()
+    options.add_argument('--headless')
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+    # إضافة ميزّات تجعله يظهر كمتصفح إنساني عادي لتجنب الحظر
+    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 
-def fetch_trendyol_product(url):
-    # إرسال هيدرز تجعل السيرفر يظن أن الطلب من متصفح حقيقي لتجنب الحظر
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7"
-    }
+    # تشغيل المتصفح
+    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+    
+    print(f"جاري فتح الرابط واختبار الجلب من: {product_url} ...")
+    driver.get(product_url)
+    
+    # الانتظار لثوانٍ للتأكد من تحميل كافة عناصر الصفحة (الصور والأسعار)
+    time.sleep(5) 
+    
+    # 2. تمرير كود الصفحة لـ BeautifulSoup للتحليل
+    soup = BeautifulSoup(driver.page_source, 'html.parser')
+    driver.quit() # إغلاق المتصفح فوراً بعد نسخ الكود لتوفير موارد الجهاز
+    
+    # 3. استخراج البيانات (تختلف الـ Tags هنا حسب الموقع المستهدف، هذا مثال تقريبي لأمازون)
     try:
-        response = requests.get(url, headers=headers, timeout=15)
-        if response.status_code != 200:
-            return {"error": f"فشل الاتصال بالموقع. كود الاستجابة: {response.status_code}"}
+        # استخراج العنوان
+        title = soup.find('span', {'id': 'productTitle'}).text.strip() if soup.find('span', {'id': 'productTitle'}) else "عنوان غير معروف"
         
-        soup = BeautifulSoup(response.text, 'html.parser')
+        # استخراج السعر
+        price_whole = soup.find('span', {'class': 'a-price-whole'}).text.strip() if soup.find('span', {'class': 'a-price-whole'}) else "0"
         
-        # 1. جلب العنوان من كود الصفحة
-        title_element = soup.find('h1', {'class': 'pr-new-br'})
-        title = title_element.text.strip() if title_element else "منتج ترنديوول"
+        # استخراج رابط الصورة الرئيسية
+        image_element = soup.find('img', {'id': 'landingImage'})
+        image_url = image_element['src'] if image_element else "لا توجد صورة"
         
-        # 2. جلب السعر من كود الصفحة
-        price_element = soup.find('span', {'class': 'prc-dsc'})
-        if not price_element:
-            price_element = soup.find('div', {'class': 'product-price'})
-            
-        if price_element:
-            # تنظيف النص لاستخراج الرقم فقط
-            price_text = price_element.text.replace('.', '').replace(',', '.')
-            price_numbers = re.findall(r"[-+]?\d*\.\d+|\d+", price_text)
-            price = float(price_numbers[0]) if price_numbers else 0.0
-        else:
-            price = 0.0
-            
-        # 3. جلب رابط الصورة
-        img_element = soup.find('img', {'class': 'base-product-image'})
-        image_url = img_element['src'] if img_element and 'src' in img_element.attrs else ""
-        
-        return {
+        # تنظيم البيانات المستخرجة
+        product_info = {
             "title": title,
-            "price": price,
-            "image_url": image_url
+            "price": price_whole,
+            "image_url": image_url,
+            "source_link": product_url
         }
         
+        return product_info
+
     except Exception as e:
-        return {"error": f"حدث خطأ أثناء قراءة الرابط: {str(e)}"}
+        return {"error": f"فشل في استخراج البيانات بسبب: {str(e)}"}
 
-# --- واجهة المستخدم ---
-product_url = st.text_input("🔗 ألصق رابط منتج ترنديوول هنا:", "")
-commission = st.number_input("💰 حدد قيمة عمولتك المتغيرة لهذا المنتج (بالريال):", min_value=0.0, value=20.0, step=1.0)
-
-if st.button("🚀 جلب وتسعير المنتج حياً"):
-    if not product_url:
-        st.warning("رجاءً ضع الرابط أولاً!")
-    else:
-        with st.spinner("جاري جلب البيانات من ترنديوول..."):
-            result = fetch_trendyol_product(product_url)
-            
-            if "error" in result:
-                st.error(result["error"])
-            else:
-                st.success("تم الجلب!")
-                st.markdown("---")
-                
-                # حساب السعر بالريال (سعر الصرف الافتراضي 0.11 لليرة)
-                price_in_sar = round(result["price"] * 0.11, 2)
-                final_price = price_in_sar + commission
-                
-                col1, col2 = st.columns()
-                with col1:
-                    if result["image_url"]:
-                        st.image(result["image_url"], use_container_width=True)
-                with col2:
-                    st.subheader("📋 تفاصيل المنتج:")
-                    st.write(f"**الاسم:** {result['title']}")
-                    st.write(f"**السعر بالليرة:** {result['price']} TRY")
-                    st.write(f"**السعر بالريال:** {price_in_sar} ريال")
-                    st.metric(label="💵 السعر النهائي مع عمولتك", value=f"{final_price} ريال")
-                    
+# --- مكان اختبار الكود المباشر ---
+if __name__ == "__main__":
+    # ضع هنا رابط منتج حقيقي من أمازون للتجربة واختبار النظام
+    test_url = "https://amazon.sa" 
+    
+    result = fetch_product_data(test_url)
+    
+    # طباعة النتيجة النهائية بشكل منظم (JSON) لرؤية نجاح العملية
+    print(json.dumps(result, ensure_ascii=False, indent=4))
+    
