@@ -75,7 +75,7 @@ if 'editing_id' not in st.session_state:
     st.session_state['editing_id'] = None
 
 # ==========================================
-# 3. محرك السحب الأصلي (مع محرك ذكي للمقاسات)
+# 3. محرك السحب الأصلي (مزود ببحث عنيف للمقاسات)
 # ==========================================
 def fetch_trendyol_product(url):
     clean_url = url.split('?')[0]
@@ -136,66 +136,50 @@ def fetch_trendyol_product(url):
     color_match = re.search(r'"color":\s*"([^"]+)"', html)
     if color_match: color_val = color_match.group(1)
 
-    # ==== محرك ذكي وحصري لاستخراج المقاسات من النظامين (العربي والتركي) ====
+    # ==== المحرك العنيف (Brute-Force) لاستخراج المقاسات ====
     available_sizes = []
     out_of_stock_sizes = []
-    
-    def extract_sizes_from_data(data_obj):
-        def search_node(node):
-            if isinstance(node, dict):
-                for key in ['allVariants', 'variants', 'sizes', 'options']:
-                    if key in node and isinstance(node[key], list):
-                        for item in node[key]:
-                            if isinstance(item, dict):
-                                val = str(item.get('value') or item.get('attributeValue') or item.get('name') or '').strip()
-                                attr_name = str(item.get('attributeName') or item.get('type') or '').lower()
-                                
-                                # تجاهل الألوان إذا ظهرت بالخطأ كمقاس
-                                if any(c in attr_name for c in ['color', 'renk', 'لون']):
-                                    continue
-                                
-                                in_stock = item.get('inStock')
-                                if in_stock is None:
-                                    in_stock = item.get('isSellable')
-                                    
-                                if val and len(val) <= 15 and in_stock is not None:
-                                    if in_stock:
-                                        available_sizes.append(val)
-                                    else:
-                                        out_of_stock_sizes.append(val)
-                # استكمال البحث العميق
-                for v in node.values():
-                    search_node(v)
-            elif isinstance(node, list):
-                for item in node:
-                    search_node(item)
-                    
-        search_node(data_obj)
 
-    # 1. البحث في نظام Next.js (المستخدم في النسخة العربية والعالمية)
-    next_data_script = soup.find('script', id='__NEXT_DATA__')
-    if next_data_script:
-        try:
-            data = json.loads(next_data_script.string)
-            extract_sizes_from_data(data)
-        except:
-            pass
+    # 1. البحث عبر العناصر المرئية (DOM) إذا تم تجهيزها مسبقاً
+    for el in soup.find_all(['div', 'span', 'button']):
+        class_str = ' '.join(el.get('class', [])).lower()
+        if any(x in class_str for x in ['sp-itm', 'size-variant', 'vrnt-item', 'size-item']):
+            val = el.text.strip()
+            if val and len(val) <= 10:
+                if any(x in class_str for x in ['out-of-stock', 'disabled', 'passive']):
+                    out_of_stock_sizes.append(val)
+                else:
+                    available_sizes.append(val)
 
-    # 2. البحث في نظام INITIAL_STATE (المستخدم في النسخة التركية الأصلية)
+    # 2. البحث بالتشريح المباشر للنص متجاهلين تعقيد JSON وحمايته
     if not available_sizes and not out_of_stock_sizes:
-        for script in soup.find_all('script'):
-            if script.string and '__INITIAL_STATE__' in script.string:
-                try:
-                    json_text = script.string.split('window.__INITIAL_STATE__=')[1].split(';window.')[0]
-                    if json_text.endswith(';'): json_text = json_text[:-1]
-                    data = json.loads(json_text)
-                    extract_sizes_from_data(data)
-                except:
-                    pass
-    
-    # إزالة المقاسات المكررة مع الحفاظ على ترتيبها
-    final_avail = list(dict.fromkeys(available_sizes))
-    final_out = list(dict.fromkeys([s for s in out_of_stock_sizes if s not in final_avail]))
+        pattern1 = r'"(?:value|attributeValue|name)"\s*:\s*"?([^",}\s]{1,10})"?\s*,.{0,100}?"(?:inStock|isSellable)"\s*:\s*(true|false)'
+        pattern2 = r'"(?:inStock|isSellable)"\s*:\s*(true|false)\s*,.{0,100}?"(?:value|attributeValue|name)"\s*:\s*"?([^",}\s]{1,10})"?\s*'
+        
+        for pat in [pattern1, pattern2]:
+            for m in re.finditer(pat, html, re.IGNORECASE | re.DOTALL):
+                start, end = m.span()
+                block = html[max(0, start - 40) : min(len(html), end + 40)].lower()
+                
+                # تخطي أي شيء يدل على أنه لون أو رابط
+                if any(c in block for c in ['color', 'renk', 'لون', 'image', 'brand', 'url']):
+                    continue
+                
+                if pat == pattern1:
+                    val, stock_str = m.group(1).strip(), m.group(2).lower()
+                else:
+                    stock_str, val = m.group(1).lower(), m.group(2).strip()
+                
+                stock = (stock_str == 'true')
+                
+                # التأكد من نظافة المقاس المستخرج
+                if val and not val.startswith('http') and len(val) <= 8 and re.search(r'[a-zA-Z0-9]', val):
+                    if stock: available_sizes.append(val)
+                    else: out_of_stock_sizes.append(val)
+
+    # إزالة التكرار مع الحفاظ على الترتيب والتحويل لأحرف كبيرة
+    final_avail = list(dict.fromkeys([str(s).upper() for s in available_sizes]))
+    final_out = list(dict.fromkeys([str(s).upper() for s in out_of_stock_sizes if str(s).upper() not in final_avail]))
     # ================================================================
 
     raw_images = re.findall(r'(https://cdn\.dsmcdn\.com/[^"\'\s<>]+?\.(?:jpg|jpeg|webp|png))', html, re.IGNORECASE)
@@ -257,7 +241,7 @@ if menu == "🚀 سحب منتج جديد":
         if not product_url:
             st.warning("الرجاء وضع الرابط أولاً.")
         else:
-            with st.spinner("جاري استخراج البيانات بالأساس القوي..."):
+            with st.spinner("جاري استخراج البيانات بوضعية البحث الشامل..."):
                 result = fetch_trendyol_product(product_url)
                 
                 if "error" in result:
