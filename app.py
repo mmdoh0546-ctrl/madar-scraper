@@ -5,7 +5,9 @@ import json
 import re
 import sqlite3
 
-# --- إعدادات قاعدة البيانات المحلية ---
+# ==========================================
+# 1. إعدادات قاعدة البيانات (مستودع المنتجات)
+# ==========================================
 def init_db():
     conn = sqlite3.connect('madar_products.db')
     c = conn.cursor()
@@ -47,14 +49,18 @@ def get_all_products():
 
 init_db()
 
-# --- إعدادات واجهة النظام ---
+# ==========================================
+# 2. إعدادات واجهة النظام والقائمة الجانبية
+# ==========================================
 st.set_page_config(page_title="نظام إدارة منتجات | سوق مدار", layout="centered", page_icon="🛍️")
 
 st.sidebar.title("📦 لوحة تحكم سوق مدار")
 st.sidebar.write("---")
 menu = st.sidebar.radio("اختر قسم:", ["🚀 سحب منتج جديد", "🗄️ مستودع المنتجات (المنتجات المحفوظة)"])
 
-# --- دالة الجلب فائقة الذكاء (محدثة لاصطياد الصور والمواصفات الدقيقة) ---
+# ==========================================
+# 3. محرك السحب الجبار (مطور لاصطياد كل الصور والمواصفات)
+# ==========================================
 def fetch_trendyol_product(url):
     scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
     try:
@@ -62,96 +68,126 @@ def fetch_trendyol_product(url):
         if response.status_code != 200:
             return {"error": f"الموقع يرفض الاتصال. كود: {response.status_code}"}
             
-        soup = BeautifulSoup(response.text, 'html.parser')
-        html_content = response.text
+        html = response.text
+        soup = BeautifulSoup(html, 'html.parser')
         
         title = ""
         price = 0.0
-        description = ""
-        images = []
+        description_lines = []
+        raw_images = []
         
-        # 1. استخراج السعر والعنوان (الطريقة الأكثر استقراراً)
-        match = re.search(r'window\.__INITIAL_STATE__\s*=\s*(\{.*?\});', html_content)
-        if match:
+        # الطريقة الأولى (العميقة): استخراج البيانات من INITIAL_STATE
+        state_match = re.search(r'window\.__INITIAL_STATE__\s*=\s*(\{.*?\});', html, re.DOTALL)
+        if state_match:
             try:
-                state_data = json.loads(match.group(1))
+                state_data = json.loads(state_match.group(1))
                 product = state_data.get('product', {}).get('productDetail', {})
                 
+                # العنوان
                 title = product.get('name', '')
                 brand = product.get('brand', {}).get('name', '')
-                if brand: title = f"{brand} - {title}"
-                
+                if brand and brand not in title: 
+                    title = f"{brand} - {title}"
+                    
+                # السعر
                 price_data = product.get('price', {})
                 price_val = price_data.get('sellingPrice', {}).get('value') or price_data.get('originalPrice', {}).get('value')
                 if price_val: price = float(price_val)
+                
+                # الصور (معالجة الروابط المختصرة والكاملة)
+                for img in product.get('images', []):
+                    img_str = str(img)
+                    if img_str.startswith('http'):
+                        raw_images.append(img_str)
+                    else:
+                        # إضافة النطاق للروابط المختصرة
+                        raw_images.append(f"https://cdn.dsmcdn.com{img_str}")
+                        
+                # المواصفات التفصيلية (تتجاهل الوصف التسويقي)
+                attrs = product.get('attributes', [])
+                for attr in attrs:
+                    k = attr.get('key', {}).get('name', '')
+                    v = attr.get('value', {}).get('name', '')
+                    if k and v:
+                        description_lines.append(f"• {k}: {v}")
             except:
                 pass
 
-        if not title:
-            meta_title = soup.find('meta', property='og:title')
-            if meta_title: title = meta_title.get('content', '')
-            
-        if price == 0.0:
-            price_tag = soup.find('span', class_='prc-dsc') or soup.find('div', class_='product-price')
-            if price_tag:
-                price_str = re.sub(r'[^\d.]', '', price_tag.text.replace(',', '.'))
-                if price_str: price = float(price_str)
+        # الطريقة الثانية: JSON-LD (في حال فشل الأولى)
+        if not title or not raw_images:
+            scripts = soup.find_all('script', type='application/ld+json')
+            for script in scripts:
+                if script.string and 'Product' in script.string:
+                    try:
+                        data = json.loads(script.string)
+                        p_data = data[0] if isinstance(data, list) else data
+                        
+                        if not title: title = p_data.get('name', '')
+                        if price == 0.0:
+                            offers = p_data.get('offers', {})
+                            if isinstance(offers, list) and len(offers) > 0: offers = offers[0]
+                            price = float(offers.get('price', 0.0))
+                            
+                        # سحب الصور
+                        img_data = p_data.get('image', [])
+                        if isinstance(img_data, str): raw_images.append(img_data)
+                        elif isinstance(img_data, list): raw_images.extend(img_data)
+                    except:
+                        continue
 
-        # 2. صائد المواصفات التفصيلية (يتجاهل الوصف التسويقي)
-        attr_lists = soup.find_all('ul', class_=re.compile(r'detail-attr|detail-desc|product-detail'))
-        if attr_lists:
-            desc_lines = []
+        # الطريقة الثالثة (خطة الطوارئ للصور): مسح الكود المصدري بالكامل
+        if not raw_images:
+            # البحث عن أي رابط صورة يخص ترينديول في الصفحة
+            regex_imgs = re.findall(r'(/ty/\d+/[^"\'\s<>]+?\.(?:jpg|jpeg|webp|png))', html, re.IGNORECASE)
+            for img in regex_imgs:
+                raw_images.append(f"https://cdn.dsmcdn.com{img}")
+                
+            regex_imgs_full = re.findall(r'(https://cdn\.dsmcdn\.com/[^"\'\s<>]+?\.(?:jpg|jpeg|webp|png))', html, re.IGNORECASE)
+            raw_images.extend(regex_imgs_full)
+
+        # الطريقة الثالثة (خطة الطوارئ للمواصفات): البحث في عناصر HTML
+        if not description_lines:
+            attr_lists = soup.find_all('ul', class_=re.compile(r'detail-attr|product-detail'))
             for ul in attr_lists:
                 for li in ul.find_all('li'):
-                    desc_lines.append(f"• {li.get_text(strip=True)}")
-            if desc_lines:
-                description = "\n".join(desc_lines)
-                
-        # إذا لم يجد الجدول، يحاول استخراجه من الجافا سكريبت
-        if not description:
-            if match:
-                try:
-                    attrs = product.get('attributes', [])
-                    if attrs:
-                        desc_lines = [f"• {attr.get('key', {}).get('name')}: {attr.get('value', {}).get('name')}" for attr in attrs]
-                        description = "\n".join(desc_lines)
-                except:
-                    pass
+                    text = li.get_text(strip=True)
+                    if text: description_lines.append(f"• {text}")
 
-        # 3. صائد الصور الشامل (يدعم WEBP و JPG و PNG)
-        # البحث المباشر في كود الصفحة بالكامل عن أي روابط صور للمنتج
-        img_urls = re.findall(r'https://cdn\.dsmcdn\.com/[^"\'\s<>]+?\.(?:jpg|jpeg|webp|png|JPG|JPEG|WEBP|PNG)', html_content)
-        for img in img_urls:
-            # فلترة الصور لأخذ صور المنتج فقط
-            if '/ty' in img or 'productmedia' in img:
-                images.append(img)
+        # --- تنظيف ومعالجة البيانات النهائية ---
+        
+        # 1. تصفية الصور (إزالة المكرر، الحصول على أعلى دقة، استبعاد صور التقييمات)
+        final_images = []
+        for img in raw_images:
+            clean_img = re.sub(r'/mnresize/\d+/\d+/', '/', img) # إزالة التصغير
+            if clean_img not in final_images and 'rating' not in clean_img and 'stamp' not in clean_img:
+                final_images.append(clean_img)
                 
-        # تنظيف الصور واستخراج الدقة العالية جداً
-        high_res_images = []
-        for img in images:
-            # حذف تصغير الحجم للحصول على الصورة الأصلية
-            clean_img = re.sub(r'/mnresize/\d+/\d+/', '/', img)
-            if clean_img not in high_res_images and 'rating' not in clean_img:
-                high_res_images.append(clean_img)
-                
-        images = list(dict.fromkeys(high_res_images))
+        # 2. تصفية الوصف
+        if description_lines:
+            final_description = "\n".join(description_lines)
+        else:
+            final_description = "لم يتم إدراج مواصفات دقيقة لهذا المنتج من قبل المورد."
 
-        # التحقق النهائي
+        # التحقق من وجود خطأ حرج
         if not title or price == 0.0:
-            return {"error": "لم نتمكن من العثور على البيانات بدقة. يرجى التأكد من الرابط."}
+            return {"error": "لم نتمكن من استخراج السعر أو العنوان. يرجى التأكد من الرابط."}
             
-        if not description or "اكتشف العروض" in description:
-            description = "مواصفات المنتج غير متوفرة في جداول المورد، يرجى مراجعة الرابط."
-            
-        return {"title": title, "price": price, "description": description, "images": images}
+        return {
+            "title": title, 
+            "price": price, 
+            "description": final_description, 
+            "images": final_images
+        }
         
     except Exception as e:
-        return {"error": f"حدث خطأ أثناء الجلب: {str(e)}"}
+        return {"error": f"حدث خطأ أثناء فك تشفير الصفحة: {str(e)}"}
 
-# --- قسم: سحب منتج جديد ---
+# ==========================================
+# 4. واجهة قسم: سحب منتج جديد
+# ==========================================
 if menu == "🚀 سحب منتج جديد":
     st.title("🛍️ سحب المنتجات لمتجر سوق مدار")
-    st.write("أدخل رابط المنتج لجلب (المواصفات الحقيقية، جميع صيغ الصور، والسعر).")
+    st.write("أدخل رابط المنتج لجلب (المواصفات الدقيقة، جميع صيغ الصور، والسعر).")
     
     product_url = st.text_input("🔗 ألصق رابط المنتج هنا:")
     
@@ -169,13 +205,13 @@ if menu == "🚀 سحب منتج جديد":
         if not product_url:
             st.warning("الرجاء وضع الرابط أولاً.")
         else:
-            with st.spinner("جاري صيد الصور والمواصفات التفصيلية..."):
+            with st.spinner("جاري صيد الصور الأصلية واستخراج المواصفات..."):
                 result = fetch_trendyol_product(product_url)
                 
                 if "error" in result:
                     st.error(result["error"])
                 else:
-                    st.success("تم سحب بيانات المنتج بنجاح فائق!")
+                    st.success("تم سحب بيانات المنتج بنجاح!")
                     
                     original_price = result['price']
                     if commission_type == "مبلغ ثابت":
@@ -192,6 +228,7 @@ if menu == "🚀 سحب منتج جديد":
                         "url": product_url
                     }
 
+    # عرض المنتج المسحوب قبل الحفظ
     if 'current_product' in st.session_state:
         p = st.session_state['current_product']
         st.write("---")
@@ -201,7 +238,7 @@ if menu == "🚀 سحب منتج جديد":
         price_col1.metric("السعر من المورد", f"{p['supplier_price']:.2f}")
         price_col2.metric("السعر النهائي للعميل", f"{p['final_price']:.2f}", delta=f"ربحك: {(p['final_price'] - p['supplier_price']):.2f}")
         
-        with st.expander("📝 عرض المواصفات والوصف", expanded=True):
+        with st.expander("📝 عرض المواصفات (تم استبعاد الوصف التسويقي)", expanded=True):
             st.text(p['description'])
         
         st.subheader(f"📸 صور المنتج ({len(p['images'])} صور)")
@@ -210,23 +247,25 @@ if menu == "🚀 سحب منتج جديد":
             for i, img_url in enumerate(p['images']):
                 cols[i % 3].image(img_url, use_container_width=True)
         else:
-            st.warning("لم يتم العثور على صور واضحة.")
+            st.warning("لم يتم العثور على صور لهذا المنتج.")
             
         st.write("---")
         if st.button("💾 حفظ المنتج في مستودع المنتجات", type="primary", use_container_width=True):
             save_product(p['title'], p['supplier_price'], p['final_price'], p['description'], p['images'], p['url'])
-            st.success("تم حفظ المنتج بنجاح! يمكنك رؤيته في القائمة الجانبية.")
+            st.success("تم حفظ المنتج بنجاح! يمكنك إدارته من القائمة الجانبية.")
             del st.session_state['current_product'] 
 
-# --- قسم: مستودع المنتجات ---
+# ==========================================
+# 5. واجهة قسم: مستودع المنتجات
+# ==========================================
 elif menu == "🗄️ مستودع المنتجات (المنتجات المحفوظة)":
     st.title("🗄️ المنتجات المجهزة لسوق مدار")
     products = get_all_products()
     
     if not products:
-        st.info("المستودع فارغ حالياً. قم بسحب منتجات جديدة أولاً.")
+        st.info("المستودع فارغ حالياً. اذهب لقسم (سحب منتج جديد) لإضافة منتجات.")
     else:
-        st.write(f"إجمالي المنتجات المحفوظة: **{len(products)}** منتج")
+        st.write(f"إجمالي المنتجات في المستودع: **{len(products)}** منتج")
         
         for prod in products:
             prod_id, title, s_price, f_price, desc, imgs_str, url = prod
@@ -251,4 +290,3 @@ elif menu == "🗄️ مستودع المنتجات (المنتجات المحف
                             st.rerun() 
                     with btn_col2:
                         st.link_button("🔗 فتح رابط المورد", url)
-        
