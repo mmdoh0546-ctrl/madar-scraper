@@ -102,8 +102,7 @@ if st.button("🚀 جلب وتحليل بيانات المنتج"):
                           (res['title'], res['price'], res['desc'], json.dumps(res['images']), res['url'], res['sku']))
                 conn.commit()
                 conn.close()
-                st.success("تم الحفظ في المستودع!")
-                import streamlit as st
+                st.success("تم الحفظ في المستودع!"  import streamlit as st
 import cloudscraper
 import requests
 from bs4 import BeautifulSoup
