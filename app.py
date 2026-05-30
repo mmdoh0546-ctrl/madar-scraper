@@ -19,24 +19,30 @@ def init_db():
                   description TEXT, 
                   images TEXT, 
                   url TEXT)''')
+    
+    # تحديث قاعدة البيانات القديمة لإضافة رمز التخزين (SKU) بأمان
+    try:
+        c.execute("ALTER TABLE products ADD COLUMN sku TEXT")
+    except sqlite3.OperationalError:
+        pass # العمود موجود مسبقاً
+        
     conn.commit()
     conn.close()
 
-def save_product(title, supplier_price, final_price, description, images, url):
+def save_product(title, sku, supplier_price, final_price, description, images, url):
     conn = sqlite3.connect('madar_products.db')
     c = conn.cursor()
     images_str = json.dumps(images)
-    c.execute("INSERT INTO products (title, supplier_price, final_price, description, images, url) VALUES (?, ?, ?, ?, ?, ?)",
-              (title, supplier_price, final_price, description, images_str, url))
+    c.execute("INSERT INTO products (title, sku, supplier_price, final_price, description, images, url) VALUES (?, ?, ?, ?, ?, ?, ?)",
+              (title, sku, supplier_price, final_price, description, images_str, url))
     conn.commit()
     conn.close()
 
-# -- الدالة الجديدة لتحديث بيانات المنتج --
-def update_product(prod_id, new_title, new_price, new_desc):
+def update_product(prod_id, new_title, new_sku, new_price, new_desc):
     conn = sqlite3.connect('madar_products.db')
     c = conn.cursor()
-    c.execute("UPDATE products SET title=?, final_price=?, description=? WHERE id=?", 
-              (new_title, new_price, new_desc, prod_id))
+    c.execute("UPDATE products SET title=?, sku=?, final_price=?, description=? WHERE id=?", 
+              (new_title, new_sku, new_price, new_desc, prod_id))
     conn.commit()
     conn.close()
 
@@ -61,14 +67,18 @@ init_db()
 # ==========================================
 # 2. إعدادات واجهة النظام والقائمة الجانبية
 # ==========================================
-st.set_page_config(page_title="نظام إدارة منتجات | سوق مدار", layout="centered", page_icon="🛍️")
+st.set_page_config(page_title="نظام إدارة منتجات | سوق مدار", layout="centered", page_icon="📦")
 
 st.sidebar.title("📦 لوحة تحكم سوق مدار")
 st.sidebar.write("---")
-menu = st.sidebar.radio("اختر قسم:", ["🚀 سحب منتج جديد", "🗄️ مستودع المنتجات (إدارة وتعديل)"])
+menu = st.sidebar.radio("اختر قسم:", ["🚀 سحب منتج جديد", "🗄️ مستودع المنتجات"])
+
+# التحكم في حالة صفحة التعديل
+if 'editing_id' not in st.session_state:
+    st.session_state['editing_id'] = None
 
 # ==========================================
-# 3. محرك السحب (مع فلتر الصور الذكي)
+# 3. محرك السحب (دقيق في الوصف وسحب SKU)
 # ==========================================
 def fetch_trendyol_product(url):
     scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
@@ -82,9 +92,15 @@ def fetch_trendyol_product(url):
         
         title = ""
         price = 0.0
+        sku = ""
         description_lines = []
         raw_images = []
         
+        # محاولة استخراج رمز التخزين (SKU) من الرابط كطريقة سريعة ومضمونة
+        sku_match = re.search(r'-p-(\d+)', url)
+        if sku_match:
+            sku = sku_match.group(1)
+            
         state_match = re.search(r'window\.__INITIAL_STATE__\s*=\s*(\{.*?\});', html, re.DOTALL)
         if state_match:
             try:
@@ -100,6 +116,9 @@ def fetch_trendyol_product(url):
                 price_val = price_data.get('sellingPrice', {}).get('value') or price_data.get('originalPrice', {}).get('value')
                 if price_val: price = float(price_val)
                 
+                if not sku:
+                    sku = str(product.get('productCode', ''))
+                
                 for img in product.get('images', []):
                     img_str = str(img)
                     if img_str.startswith('http'):
@@ -107,6 +126,7 @@ def fetch_trendyol_product(url):
                     else:
                         raw_images.append(f"https://cdn.dsmcdn.com{img_str}")
                         
+                # التركيز حصراً على جدول المواصفات
                 attrs = product.get('attributes', [])
                 for attr in attrs:
                     k = attr.get('key', {}).get('name', '')
@@ -125,6 +145,7 @@ def fetch_trendyol_product(url):
                         p_data = data[0] if isinstance(data, list) else data
                         
                         if not title: title = p_data.get('name', '')
+                        if not sku: sku = str(p_data.get('sku', sku))
                         if price == 0.0:
                             offers = p_data.get('offers', {})
                             if isinstance(offers, list) and len(offers) > 0: offers = offers[0]
@@ -137,10 +158,6 @@ def fetch_trendyol_product(url):
                         continue
 
         if not raw_images:
-            regex_imgs = re.findall(r'(/ty/\d+/[^"\'\s<>]+?\.(?:jpg|jpeg|webp|png))', html, re.IGNORECASE)
-            for img in regex_imgs:
-                raw_images.append(f"https://cdn.dsmcdn.com{img}")
-                
             regex_imgs_full = re.findall(r'(https://cdn\.dsmcdn\.com/[^"\'\s<>]+?\.(?:jpg|jpeg|webp|png))', html, re.IGNORECASE)
             raw_images.extend(regex_imgs_full)
 
@@ -151,33 +168,28 @@ def fetch_trendyol_product(url):
                     text = li.get_text(strip=True)
                     if text: description_lines.append(f"• {text}")
 
-        # القائمة السوداء لمنع الشعارات
-        blacklist = [
-            'logo', 'icon', 'flag', 'pci', 'iso', 'trust', 'badge', 'payment', 
-            'footer', 'asset', 'web/production', 'frontend', 'campaign', 
-            'saudibusiness', 'sbc', 'stamp', 'rating', 'seller-store', 'avatar',
-            'checkout'
-        ]
-        
+        # فلتر الصور (إزالة أي شعارات)
+        blacklist = ['logo', 'icon', 'flag', 'pci', 'iso', 'trust', 'badge', 'payment', 'footer', 'asset', 'saudibusiness', 'sbc', 'stamp', 'rating']
         final_images = []
         for img in raw_images:
             clean_img = re.sub(r'/mnresize/\d+/\d+/', '/', img) 
             clean_img_lower = clean_img.lower()
-            
             if not any(bad_word in clean_img_lower for bad_word in blacklist):
                 if clean_img not in final_images:
                     final_images.append(clean_img)
                 
+        # تجهيز الوصف النهائي كمميزات فقط
         if description_lines:
-            final_description = "\n".join(description_lines)
+            final_description = "مميزات ومواصفات المنتج:\n" + "\n".join(description_lines)
         else:
-            final_description = "لم يتم إدراج مواصفات دقيقة لهذا المنتج من قبل المورد."
+            final_description = "لم يقم المورد بإدراج جدول مواصفات دقيق لهذا المنتج."
 
         if not title or price == 0.0:
             return {"error": "لم نتمكن من استخراج السعر أو العنوان. يرجى التأكد من الرابط."}
             
         return {
             "title": title, 
+            "sku": sku if sku else "N/A",
             "price": price, 
             "description": final_description, 
             "images": final_images
@@ -190,12 +202,11 @@ def fetch_trendyol_product(url):
 # 4. واجهة قسم: سحب منتج جديد
 # ==========================================
 if menu == "🚀 سحب منتج جديد":
+    st.session_state['editing_id'] = None # تصفير حالة التعديل
     st.title("🛍️ سحب المنتجات لمتجر سوق مدار")
-    st.write("أدخل رابط المنتج لجلب (المواصفات الدقيقة، صور المنتج الصافية، والسعر).")
     
     product_url = st.text_input("🔗 ألصق رابط المنتج هنا:")
     
-    st.subheader("⚙️ إعدادات التسعير والعمولة الأولية")
     col_type, col_val = st.columns(2)
     with col_type:
         commission_type = st.radio("نوع العمولة:", ["مبلغ ثابت", "نسبة مئوية (%)"])
@@ -209,7 +220,7 @@ if menu == "🚀 سحب منتج جديد":
         if not product_url:
             st.warning("الرجاء وضع الرابط أولاً.")
         else:
-            with st.spinner("جاري صيد الصور وتنقيتها من الشعارات..."):
+            with st.spinner("جاري استخراج المواصفات الفنية وصور المنتج..."):
                 result = fetch_trendyol_product(product_url)
                 
                 if "error" in result:
@@ -225,6 +236,7 @@ if menu == "🚀 سحب منتج جديد":
                     
                     st.session_state['current_product'] = {
                         "title": result['title'],
+                        "sku": result['sku'],
                         "supplier_price": original_price,
                         "final_price": final_price,
                         "description": result['description'],
@@ -236,74 +248,123 @@ if menu == "🚀 سحب منتج جديد":
         p = st.session_state['current_product']
         st.write("---")
         st.subheader(p['title'])
+        st.caption(f"رمز التخزين (SKU): {p['sku']}")
         
         price_col1, price_col2 = st.columns(2)
         price_col1.metric("السعر من المورد", f"{p['supplier_price']:.2f}")
         price_col2.metric("السعر النهائي للعميل", f"{p['final_price']:.2f}", delta=f"ربحك: {(p['final_price'] - p['supplier_price']):.2f}")
         
-        with st.expander("📝 عرض المواصفات (تم استبعاد الوصف التسويقي)", expanded=True):
+        with st.expander("📝 عرض المواصفات", expanded=True):
             st.text(p['description'])
         
-        st.subheader(f"📸 صور المنتج ({len(p['images'])} صور مفلترة)")
+        st.subheader(f"📸 صور المنتج ({len(p['images'])} صور)")
         if p['images']:
             cols = st.columns(3)
             for i, img_url in enumerate(p['images']):
                 cols[i % 3].image(img_url, use_container_width=True)
-        else:
-            st.warning("لم يتم العثور على صور لهذا المنتج.")
             
         st.write("---")
         if st.button("💾 حفظ المنتج في مستودع المنتجات", type="primary", use_container_width=True):
-            save_product(p['title'], p['supplier_price'], p['final_price'], p['description'], p['images'], p['url'])
-            st.success("تم حفظ المنتج بنجاح! يمكنك إدارته من القائمة الجانبية.")
+            save_product(p['title'], p['sku'], p['supplier_price'], p['final_price'], p['description'], p['images'], p['url'])
+            st.success("تم حفظ المنتج بنجاح! يمكنك إدارته من المستودع.")
             del st.session_state['current_product'] 
 
 # ==========================================
-# 5. واجهة قسم: مستودع المنتجات (مع ميزة التعديل)
+# 5. واجهة قسم: مستودع المنتجات (لوحة ذكية)
 # ==========================================
-elif menu == "🗄️ مستودع المنتجات (إدارة وتعديل)":
+elif menu == "🗄️ مستودع المنتجات":
     st.title("🗄️ إدارة مستودع سوق مدار")
     products = get_all_products()
     
-    if not products:
-        st.info("المستودع فارغ حالياً. اذهب لقسم (سحب منتج جديد) لإضافة منتجات.")
-    else:
-        st.write(f"إجمالي المنتجات في المستودع: **{len(products)}** منتج")
+    # --- حالة التعديل الفردية (Edit Mode) ---
+    if st.session_state['editing_id'] is not None:
+        # البحث عن المنتج المراد تعديله
+        prod_to_edit = next((p for p in products if p[0] == st.session_state['editing_id']), None)
         
-        for prod in products:
-            prod_id, title, s_price, f_price, desc, imgs_str, url = prod
+        if prod_to_edit:
+            prod_id, title, supplier_price, final_price, desc, imgs_str, url, *extra = prod_to_edit
+            sku = extra[0] if extra else "N/A" # لمعالجة المنتجات القديمة
             imgs = json.loads(imgs_str)
             
             st.write("---")
-            # عرض العنوان والسعر
-            st.subheader(title)
-            st.write(f"**تكلفة المورد:** {s_price:.2f} SAR | **سعر البيع الحالي:** {f_price:.2f} SAR | **الربح:** {(f_price - s_price):.2f} SAR")
+            st.subheader("✏️ تعديل بيانات المنتج")
             
-            # --- قسم التعديل ---
-            with st.expander("✏️ تعديل بيانات المنتج"):
-                new_title = st.text_input("عنوان المنتج:", value=title, key=f"t_{prod_id}")
-                new_price = st.number_input("سعر البيع النهائي (شامل العمولة):", value=float(f_price), step=1.0, key=f"p_{prod_id}")
-                new_desc = st.text_area("الوصف والمواصفات:", value=desc, height=150, key=f"d_{prod_id}")
+            new_title = st.text_input("عنوان المنتج:", value=title)
+            new_sku = st.text_input("رمز التخزين (SKU):", value=sku)
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("تكلفة المورد الأصلية", f"{supplier_price:.2f} SAR")
+            with col2:
+                new_price = st.number_input("سعر البيع النهائي (شامل العمولة):", value=float(final_price), step=1.0)
                 
-                if st.button("💾 حفظ التعديلات الجديدة", key=f"save_{prod_id}", type="primary"):
-                    update_product(prod_id, new_title, new_price, new_desc)
-                    st.success("تم تحديث بيانات المنتج بنجاح! سيتم إعادة تحميل الصفحة...")
+            new_desc = st.text_area("المميزات والمواصفات:", value=desc, height=200)
+            
+            st.write(f"**معرض الصور ({len(imgs)}):**")
+            if imgs:
+                img_cols = st.columns(4)
+                for i, img_url in enumerate(imgs):
+                    img_cols[i % 4].image(img_url, use_container_width=True)
+            
+            save_col, cancel_col = st.columns(2)
+            with save_col:
+                if st.button("💾 حفظ التعديلات", type="primary", use_container_width=True):
+                    update_product(prod_id, new_title, new_sku, new_price, new_desc)
+                    st.success("تم التحديث بنجاح!")
+                    st.session_state['editing_id'] = None
                     st.rerun()
+            with cancel_col:
+                if st.button("❌ إلغاء والرجوع للمستودع", use_container_width=True):
+                    st.session_state['editing_id'] = None
+                    st.rerun()
+                    
+    # --- حالة العرض الرئيسية للمستودع (List Mode) ---
+    else:
+        if not products:
+            st.info("المستودع فارغ حالياً. اذهب لقسم (سحب منتج جديد) لإضافة منتجات.")
+        else:
+            # شريط البحث
+            search_query = st.text_input("🔍 ابحث باسم المنتج أو رمز التخزين (SKU)...")
             
-            # --- قسم عرض جميع الصور ---
-            with st.expander(f"🖼️ عرض جميع صور المنتج ({len(imgs)} صور)"):
-                if imgs:
-                    img_cols = st.columns(3)
-                    for i, img_url in enumerate(imgs):
-                        img_cols[i % 3].image(img_url, use_container_width=True)
-                else:
-                    st.write("لا توجد صور محفوظة.")
+            st.write(f"إجمالي المنتجات المحفوظة: **{len(products)}**")
             
-            # أزرار الإجراءات (حذف ورابط المورد)
-            btn_col1, btn_col2 = st.columns(2)
-            with btn_col1:
-                if st.button(f"🗑️ حذف المنتج نهائياً", key=f"del_{prod_id}"):
-                    delete_product(prod_id)
-                    st.rerun() 
-            with btn_col2:
-                st.link_button("🔗 فتح رابط المورد الأصلي", url)
+            for prod in products:
+                prod_id, title, s_price, f_price, desc, imgs_str, url, *extra = prod
+                sku = extra[0] if extra else "غير متوفر"
+                
+                # تطبيق فلتر البحث
+                if search_query:
+                    if search_query.lower() not in title.lower() and search_query.lower() not in str(sku).lower():
+                        continue
+                
+                imgs = json.loads(imgs_str)
+                
+                # صندوق عرض مرتب للمنتج
+                with st.container():
+                    col_img, col_info, col_actions = st.columns([1.5, 4, 1.5])
+                    
+                    # 1. عرض صورة واحدة فقط
+                    with col_img:
+                        if imgs:
+                            st.image(imgs[0], use_container_width=True)
+                        else:
+                            st.write("بدون صورة")
+                            
+                    # 2. عرض بيانات مختصرة
+                    with col_info:
+                        st.markdown(f"**{title}**")
+                        st.caption(f"رمز التخزين: {sku}")
+                        st.write(f"السعر: **{f_price:.2f} SAR**")
+                        st.markdown(f"[رابط المورد الأصلي]({url})")
+                        
+                    # 3. أزرار التحكم
+                    with col_actions:
+                        if st.button("✏️ تعديل", key=f"edit_{prod_id}", use_container_width=True):
+                            st.session_state['editing_id'] = prod_id
+                            st.rerun()
+                            
+                        if st.button("🗑️ حذف", key=f"del_{prod_id}", use_container_width=True):
+                            delete_product(prod_id)
+                            st.rerun()
+                    
+                    st.write("---") # خط فاصل بين كل منتج
