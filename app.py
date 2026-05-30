@@ -19,7 +19,7 @@ def init_db():
 init_db()
 
 # ==========================================
-# 2. محرك السحب (اسم موحد وثابت: fetch_trendyol_product)
+# 2. محرك السحب (fetch_trendyol_product)
 # ==========================================
 def fetch_trendyol_product(url):
     api_key = "806ec65adfba7c70b7b4e1d57d54edc7"
@@ -57,10 +57,11 @@ def fetch_trendyol_product(url):
             else: out.append(val)
     desc = f"✅ متوفر: {', '.join(avail) if avail else 'لا يوجد'}\n❌ نفد: {', '.join(out) if out else 'لا يوجد'}"
 
-    # استخراج الصور (فلتر صارم)
+    # استخراج الصور (فلتر صارم جداً لحذف الشعارات)
     raw_imgs = product.get('images', [])
     final_imgs = []
-    blacklist = ['logo', 'icon', 'saudibusiness', 'frontend', 'maroof', 'mada']
+    # قائمة حظر تشمل أي شيء ليس منتجاً
+    blacklist = ['logo', 'icon', 'saudibusiness', 'frontend', 'maroof', 'mada', 'footer', 'stamp']
     
     for img in raw_imgs:
         if isinstance(img, str):
@@ -71,15 +72,15 @@ def fetch_trendyol_product(url):
     return {"title": title, "price": float(price), "desc": desc, "images": final_imgs, "url": url, "sku": sku}
 
 # ==========================================
-# 3. واجهة المستخدم
+# 3. الواجهة (بنفس تصميمك السابق)
 # ==========================================
-st.title("🛍️ سوق مدار - الإصدار الثابت")
-url = st.text_input("🔗 رابط المنتج:")
+st.title("🛍️ سوق مدار - الإصدار المستقر")
+product_url = st.text_input("🔗 رابط المنتج:")
 
-if st.button("🚀 جلب وتحليل"):
-    with st.spinner("جاري السحب عبر قوتك الخارقة..."):
-        # هنا يتم النداء على الاسم الصحيح الموحد
-        res = fetch_trendyol_product(url)
+if st.button("🚀 جلب وتحليل بيانات المنتج"):
+    with st.spinner("جاري السحب..."):
+        # اسم الدالة ثابت الآن ولن يسبب NameError
+        res = fetch_trendyol_product(product_url)
         
         if "error" in res:
             st.error(res["error"])
@@ -89,6 +90,7 @@ if st.button("🚀 جلب وتحليل"):
             st.write(f"**السعر:** {res['price']} SAR")
             st.info(res['desc'])
             
+            # عرض الصور
             cols = st.columns(3)
             for i, img in enumerate(res['images'][:6]):
                 cols[i % 3].image(img)
