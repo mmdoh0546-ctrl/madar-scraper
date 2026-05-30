@@ -75,19 +75,17 @@ if 'editing_id' not in st.session_state:
     st.session_state['editing_id'] = None
 
 # ==========================================
-# 3. محرك السحب المحدث (دقيق في استخراج المقاسات)
+# 3. محرك السحب الأصلي (مع إصلاح استخراج المقاسات فقط)
 # ==========================================
 def fetch_trendyol_product(url):
     clean_url = url.split('?')[0]
     html = ""
     
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept-Language': 'ar,en-US;q=0.9',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+        'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+        'Accept-Language': 'ar,en-US;q=0.9'
     }
     
-    # 1. محاولة جلب الصفحة
     try:
         scraper = cloudscraper.create_scraper()
         resp = scraper.get(clean_url, timeout=15)
@@ -112,7 +110,6 @@ def fetch_trendyol_product(url):
     available_sizes = []
     out_of_stock_sizes = []
     
-    # 2. استخراج العنوان والسعر الأساسي
     meta_title = soup.find('meta', property='og:title')
     if meta_title: 
         title = meta_title.get('content', '').replace(" - Trendyol", "").strip()
@@ -122,36 +119,6 @@ def fetch_trendyol_product(url):
         try: price = float(meta_price.get('content', '0').replace(',', '.'))
         except: pass
 
-    # 3. استخراج كائن بيانات Trendyol الكامل (window.__INITIAL_STATE__)
-    script_match = re.search(r'window\.__INITIAL_STATE__\s*=\s*({.*?});', html, re.DOTALL)
-    
-    if script_match:
-        try:
-            script_data = json.loads(script_match.group(1))
-            product_data = script_data.get('product', {}).get('product', {})
-            
-            if not title: title = product_data.get('name', '')
-            if price == 0.0: price = float(product_data.get('price', {}).get('sellingPrice', {}).get('value', 0.0))
-            
-            attributes = product_data.get('attributes', [])
-            for attr in attributes:
-                if attr.get('key', {}).get('name', '').lower() in ['renk', 'color']:
-                    color_val = attr.get('value', {}).get('name', '')
-                    break
-            
-            all_variants = product_data.get('allVariants', [])
-            for variant in all_variants:
-                val = variant.get('value', '')
-                if val:
-                    in_stock = variant.get('inStock', False) 
-                    if in_stock:
-                        available_sizes.append(val)
-                    else:
-                        out_of_stock_sizes.append(val)
-        except Exception as e:
-            pass
-
-    # الطريقة الاحتياطية
     if not title or price == 0.0:
         for script in soup.find_all('script', type='application/ld+json'):
             if script.string and 'Product' in script.string:
@@ -168,7 +135,32 @@ def fetch_trendyol_product(url):
     sku_match = re.search(r'-p-(\d+)', clean_url)
     if sku_match: sku = sku_match.group(1)
 
-    # 4. استخراج الصور
+    color_match = re.search(r'"color":\s*"([^"]+)"', html)
+    if color_match: color_val = color_match.group(1)
+
+    # ==== التعديل الدقيق لإصلاح المقاسات بدون استخدام Regex معقد ====
+    for script in soup.find_all('script'):
+        if script.string and '__INITIAL_STATE__' in script.string:
+            try:
+                # قص النص المعقد لاستخراج ملف البيانات بأمان
+                json_text = script.string.split('window.__INITIAL_STATE__=')[1].split(';window.')[0]
+                if json_text.endswith(';'): json_text = json_text[:-1]
+                    
+                data = json.loads(json_text)
+                product_data = data.get('product', {}).get('product', {})
+                all_variants = product_data.get('allVariants', [])
+                
+                for variant in all_variants:
+                    val = variant.get('value', '')
+                    if val:
+                        if variant.get('inStock', False): 
+                            available_sizes.append(val)
+                        else: 
+                            out_of_stock_sizes.append(val)
+            except Exception as e:
+                pass
+    # ================================================================
+
     raw_images = re.findall(r'(https://cdn\.dsmcdn\.com/[^"\'\s<>]+?\.(?:jpg|jpeg|webp|png))', html, re.IGNORECASE)
     blacklist = ['logo', 'icon', 'flag', 'pci', 'iso', 'trust', 'badge', 'payment', 'footer', 'asset', 'saudibusiness', 'sbc', 'stamp', 'rating', 'maroof', 'mada', 'visa', 'mastercard', 'applepay', 'stcpay', 'vat', 'tax', 'norton', 'size-chart', 'delivery', 'campaign', 'brand']
     
@@ -185,19 +177,17 @@ def fetch_trendyol_product(url):
             if not any(bad_word in clean_img.lower() for bad_word in blacklist) and clean_img not in final_images:
                 final_images.append(clean_img)
 
-    # 5. بناء الوصف النهائي شامل المقاسات
     final_desc_parts = []
     if color_val: final_desc_parts.append(f"🎨 **اللون:** {color_val}")
     
     if available_sizes:
-        unique_avail = list(dict.fromkeys(available_sizes))
-        final_desc_parts.append(f"✅ **مقاسات متوفرة للبيع:** {', '.join(unique_avail)}")
-        
+        available_sizes = list(dict.fromkeys(available_sizes))
+        final_desc_parts.append(f"✅ **مقاسات متوفرة للبيع:** {', '.join(available_sizes)}")
     if out_of_stock_sizes:
-        unique_out = list(dict.fromkeys(out_of_stock_sizes))
-        final_desc_parts.append(f"❌ **مقاسات نفدت:** {', '.join(unique_out)}")
+        out_of_stock_sizes = list(dict.fromkeys(out_of_stock_sizes))
+        final_desc_parts.append(f"❌ **مقاسات نفدت:** {', '.join(out_of_stock_sizes)}")
 
-    final_description = "\n".join(final_desc_parts) if final_desc_parts else "لم يدرج المورد مواصفات إضافية (ألوان أو مقاسات)."
+    final_description = "\n".join(final_desc_parts) if final_desc_parts else "لم يدرج المورد مواصفات إضافية."
 
     if not title or price == 0.0:
         return {"error": "فشلنا في العثور على السعر أو العنوان. المورد حظر الرابط حالياً."}
@@ -369,4 +359,4 @@ elif menu == "🗄️ مستودع المنتجات":
                             delete_product(prod_id)
                             st.rerun()
                     
-                    st.write("---") 
+                    st.write("---")
